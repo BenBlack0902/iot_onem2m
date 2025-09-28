@@ -1,5 +1,4 @@
 version: '3.8'
-
 services:
   acme:
     image: ankraft/acme-onem2m-cse:latest
@@ -9,12 +8,13 @@ services:
       - "8080:8080"
     environment:
       - CSE_ORIGIN=admin:admin
+      # Enable HTTP Basic Authentication
+      - ACME_HTTP_SECURITY_ENABLEBASICAUTH=true
     volumes:
       - ./cse:/cse
       - acme-data:/cse/data
     networks:
       - in-cse-net
-
   mood:
     build: ./mood-service
     container_name: mood
@@ -30,11 +30,10 @@ services:
       - acme
     networks:
       - in-cse-net
-
 volumes:
   acme-data:
     driver: local
-
 networks:
   in-cse-net:
     driver: bridge
+
