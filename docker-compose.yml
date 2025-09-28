@@ -1,0 +1,40 @@
+version: '3.8'
+
+services:
+  acme:
+    image: ankraft/acme-onem2m-cse:latest
+    container_name: acme-onem2m-cse
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      - CSE_ORIGIN=admin:admin
+    volumes:
+      - ./cse:/cse
+      - acme-data:/cse/data
+    networks:
+      - in-cse-net
+
+  mood:
+    build: ./mood-service
+    container_name: mood
+    restart: unless-stopped
+    ports:
+      - "8088:8088"
+    environment:
+      - CSE_BASE=${CSE_BASE}
+      - CSE_ORIGIN=${CSE_ORIGIN}
+      - MOOD_NOTIFY=${MOOD_NOTIFY}
+      - ROOM_IDS=${ROOM_IDS}
+    depends_on:
+      - acme
+    networks:
+      - in-cse-net
+
+volumes:
+  acme-data:
+    driver: local
+
+networks:
+  in-cse-net:
+    driver: bridge
