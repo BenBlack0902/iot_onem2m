@@ -26,3 +26,7 @@ This file tracks the current status of the IN-CSE Cloud Analytics / Mood Service
 
 ## Notes
 - Update this file after each major session so Cline can track ongoing progress across conversations.
+
+## Recent changes
+- 2025-10-02: Persisted net.ipv4.ip_forward=1 and installed iptables-persistent on the cloud VPS (debian-8gb-fsn1-1). Saved current iptables rules so WireGuard NAT (wg0) and forwarding persist across reboots. Commands executed: `echo "net.ipv4.ip_forward=1" > /etc/sysctl.d/99-wireguard.conf; sudo sysctl --system; sudo apt-get install -y iptables-persistent; sudo netfilter-persistent save`.
+- Note: System-level files (/etc/sysctl.d/99-wireguard.conf and saved iptables rules) are on the cloud host; the repository records these actions in this memory bank entry.
