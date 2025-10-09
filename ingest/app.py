@@ -31,6 +31,17 @@ def onem2m():
     con = cin.get("con")
     parent = s.get("sur") or "unknown"
 
+    # CSE sometimes stores the content as a JSON-encoded string; parse if necessary
+    if isinstance(con, str):
+        try:
+            con = json.loads(con)
+        except Exception:
+            # leave as-is if it's not valid JSON
+            pass
+
+    # Log receipt for debugging purposes
+    app.logger.info("ingest: received ci rn=%s parent=%s", ci_rn, parent)
+
     ts_cse = parse_ct(ct)
 
     with conn, conn.cursor() as cur:
