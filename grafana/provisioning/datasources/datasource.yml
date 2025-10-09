@@ -1,0 +1,17 @@
+apiVersion: 1
+
+datasources:
+  - name: OneM2M Postgres
+    type: postgres
+    access: proxy
+    url: postgres:5432
+    isDefault: true
+    database: onem2m
+    user: onem2m
+    secureJsonData:
+      password: onem2m_pass
+    jsonData:
+      sslmode: disable
+      postgresVersion: 1200
+    version: 1
+    editable: false
