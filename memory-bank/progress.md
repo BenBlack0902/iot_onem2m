@@ -12,6 +12,7 @@ This file tracks the current status of the IN-CSE Cloud Analytics / Mood Service
 - Starting ACME CSE container and creating AE/CNT resource tree (planned).
 - Creating subscription(s) and testing end-to-end flow (planned).
 - Integrating PostgreSQL and Grafana for telemetry storage and visualization (in progress — init SQL, docker-compose, and Grafana provisioning added).
+- Adding ingestion service `ingest/` to process oneM2M notifications and populate the database (added and smoke-tested).
 
 ## Blockers / Risks
 - ACME CSE container image availability (need image name or build instructions).
@@ -44,3 +45,6 @@ This file tracks the current status of the IN-CSE Cloud Analytics / Mood Service
     - Database objects exist (tables, view, materialized view).
     - Grafana successfully provisions and connects to the Postgres datasource (`Database Connection OK`).
   - Left next steps: implement ingestion in `mood-service` and add dashboards/provisioning.
+- 2025-10-09: Added `ingest` service (Flask) and Dockerfile; updated `docker-compose.yml`. Performed smoke test:
+  - Sent test payload via `POST /test-insert` to http://localhost:8089/test-insert.
+  - Database rows were inserted into `fact_telemetry` for `cin-smoketest-001` (temperature & humidity).
