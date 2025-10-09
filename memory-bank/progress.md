@@ -22,7 +22,7 @@ This file tracks the current status of the IN-CSE Cloud Analytics / Mood Service
 
 ## Next steps
 - Create mood-service scaffold under `mood-service/` and add Dockerfile (existing).
-- Add ingestion logic in `mood-service` to:
+- Add ingestion logic in `mood-service` and add Dockerfile (existing):
   - Write incoming oneM2M ContentInstance payloads into `raw_onem2m_ci`.
   - Parse and upsert `dim_room`, `dim_device`, `dim_metric`.
   - Insert parsed rows into `fact_telemetry`.
@@ -48,3 +48,17 @@ This file tracks the current status of the IN-CSE Cloud Analytics / Mood Service
 - 2025-10-09: Added `ingest` service (Flask) and Dockerfile; updated `docker-compose.yml`. Performed smoke test:
   - Sent test payload via `POST /test-insert` to http://localhost:8089/test-insert.
   - Database rows were inserted into `fact_telemetry` for `cin-smoketest-001` (temperature & humidity).
+- 2025-10-09: Restricted public access to ACME web UI
+  - Bound ACME container to localhost by changing `docker-compose.yml` mapping from `8080:8080` to `127.0.0.1:8080:8080` so the container no longer exposes the UI on the host public interface.
+  - Updated WireGuard hub config `wireguard-onem2m-setup/configs/cloud/wg0.conf` PostUp/PostDown to add iptables rules that ACCEPT TCP/8080 from the VPN peers:
+    - Alper: 10.100.0.2
+    - Tahir: 10.100.0.4
+    and DROP other TCP/8080 traffic.
+  - Applied runtime iptables rules on the host to immediately enforce the allowlist (INPUT ACCEPT for 10.100.0.2 and 10.100.0.4, and a default DROP for TCP/8080).
+  - Added an iptables NAT PREROUTING rule to allow wg0 peers to reach the localhost-bound service (so VPN peers can access the GUI).
+  - Restarted the ACME container so the new localhost binding took effect.
+  - Verification: ACME now listens on 127.0.0.1:8080; public requests to http://91.98.80.99:8080 are blocked while VPN peers should be able to reach the UI. Final verification from Tahir/Alper is recommended.
+Action items:
+- (Optional) Replace runtime NAT redirect with nginx reverse proxy for better control, TLS, and logging.
+- (Optional) Rotate ACME admin credentials and ensure GUI endpoints require app-level auth if needed.
+- (Optional) Persist NAT PREROUTING in wg PostUp/PostDown or move redirect logic to a small systemd unit so it survives reboots.
