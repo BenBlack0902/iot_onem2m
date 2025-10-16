@@ -101,6 +101,34 @@ ORDER BY device_id, metric_id, ts_cse DESC;
 -- Index for materialized view refresh/read
 CREATE INDEX IF NOT EXISTS mv_latest_5m_idx ON mv_latest_5m (device_id, metric_id, ts_cse DESC);
 
+-- Mood scores table: store computed mood per room
+CREATE TABLE IF NOT EXISTS fact_mood_scores (
+  id BIGSERIAL PRIMARY KEY,
+  room_id INTEGER REFERENCES dim_room(room_id),
+  ts TIMESTAMPTZ NOT NULL,
+  score INTEGER NOT NULL CHECK (score >= 0 AND score <= 100),
+  label TEXT NOT NULL CHECK (label IN ('focus', 'neutral', 'tired')),
+  telemetry_snapshot JSONB,
+  inserted_at TIMESTAMPTZ DEFAULT now(),
+  UNIQUE (room_id, ts)
+);
+
+-- Indexes for mood queries
+CREATE INDEX IF NOT EXISTS idx_mood_room_ts ON fact_mood_scores (room_id, ts DESC);
+CREATE INDEX IF NOT EXISTS idx_mood_telemetry_gin ON fact_mood_scores USING GIN (telemetry_snapshot);
+
+-- View: latest mood per room
+CREATE OR REPLACE VIEW v_latest_mood_by_room AS
+WITH latest AS (
+  SELECT DISTINCT ON (room_id)
+    room_id, score, label, ts, telemetry_snapshot
+  FROM fact_mood_scores
+  ORDER BY room_id, ts DESC
+)
+SELECT r.room_rn, l.room_id, l.score, l.label, l.ts, l.telemetry_snapshot
+FROM latest l
+LEFT JOIN dim_room r ON r.room_id = l.room_id;
+
 -- Example view: temporary comfort score by room (simple formula)
 -- Comfort formula (example): comfort = 100 - abs(22 - temp) * 2 - abs(50 - rh) * 0.5
 -- This view expects metrics named 'temperature' and 'humidity' to exist in dim_metric

@@ -58,6 +58,21 @@ This file tracks the current status of the IN-CSE Cloud Analytics / Mood Service
   - Added an iptables NAT PREROUTING rule to allow wg0 peers to reach the localhost-bound service (so VPN peers can access the GUI).
   - Restarted the ACME container so the new localhost binding took effect.
   - Verification: ACME now listens on 127.0.0.1:8080; public requests to http://91.98.80.99:8080 are blocked while VPN peers should be able to reach the UI. Final verification from Tahir/Alper is recommended.
+- 2025-10-16: Mood explainability + E2E demo (branch: feature/mood-explainability-e2e)
+  - Added support for telemetry provided as either:
+    - a flat content instance: `con` containing keys `co2`, `noise`, `lux`, `temp`, `rh`, `occ`
+    - or an envelope with `metrics` list: `con.metrics = [{ "name": "...", "value": ... }, ...]`
+    The code now normalizes the `metrics` list into a flat dict before scoring.
+  - compute_mood_score now returns an explainability `components` object with per-metric normalized scores, weights, and combined value. Components are logged for debugging and included in the mood CIN posted back to the CSE.
+  - Ensured the mood service includes required oneM2M headers (X-M2M-RI, X-M2M-RVI, X-M2M-Origin) when reading/writing the CSE.
+  - Added `scripts/e2e-watch.sh` (demo) that:
+    - Optionally creates a temporary subscription that notifies both mood and ingest,
+    - Posts a full telemetry CI (supports both shapes),
+    - Tails mood & ingest logs, polls CSE /la, and prints DB rows,
+    - Cleans up the temporary subscription.
+  - Improved `scripts/smoke-test.sh` with HTTP readiness probe for the CSE and other robustness fixes.
+  - Branch created and pushed: `feature/mood-explainability-e2e` (PR link: https://github.com/BenBlack0902/iot_onem2m/pull/new/feature/mood-explainability-e2e)
+  - Demo example: `bash ./scripts/e2e-watch.sh --demo --timeout 30 --co2 720` — shows components and verifies persistence.
 Action items:
 - (Optional) Replace runtime NAT redirect with nginx reverse proxy for better control, TLS, and logging.
 - (Optional) Rotate ACME admin credentials and ensure GUI endpoints require app-level auth if needed.

@@ -5,7 +5,7 @@ services:
     container_name: acme-onem2m-cse
     restart: unless-stopped
     ports:
-      - "127.0.0.1:8080:8080"
+      - "8080:8080"
     environment:
       - CSE_ORIGIN=admin:admin
       # Enable HTTP Basic Authentication
@@ -27,8 +27,10 @@ services:
       - CSE_ORIGIN=${CSE_ORIGIN}
       - MOOD_NOTIFY=${MOOD_NOTIFY}
       - ROOM_IDS=${ROOM_IDS}
+      - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
     depends_on:
       - acme
+      - postgres
     networks:
       - in-cse-net
 
