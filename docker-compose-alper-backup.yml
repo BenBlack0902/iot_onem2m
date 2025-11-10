@@ -1,23 +1,18 @@
+version: '3.8'
 services:
   acme:
-    image: r3dpanda1/acme-onem2m-cse
-    container_name: cloud-in-cse
+    image: ankraft/acme-onem2m-cse:latest
+    container_name: acme-onem2m-cse
     restart: unless-stopped
     ports:
       - "8080:8080"
     environment:
-      - INCSE_HOST
-      - INCSE_PORT
-      - INCSE_ID
-      - INCSE_NAME
-      - MNCSE_ID
-    env_file:
-      - .env
+      - CSE_ORIGIN=admin:admin
+      # Enable HTTP Basic Authentication
+      - ACME_HTTP_SECURITY_ENABLEBASICAUTH=true
     volumes:
-      - ./cse:/data
-      - acme-data:/opt/ACME-oneM2M-CSE/data
-    stdin_open: true
-    tty: true
+      - ./cse:/cse
+      - acme-data:/cse/data
     networks:
       - in-cse-net
 
