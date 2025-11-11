@@ -79,6 +79,8 @@ services:
       - postgres
     ports:
       - "8089:8088"
+    volumes:
+      - ./logs/ingest:/var/log/ingest
 
 volumes:
   acme-data:
