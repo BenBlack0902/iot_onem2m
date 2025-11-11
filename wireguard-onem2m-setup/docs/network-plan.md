@@ -6,9 +6,9 @@
 
 ## Cloud Server (Hetzner)
 - Provider: Hetzner Cloud (Falkenstein)
-- Public IP: 91.98.80.99
+- Public IP: 135.181.198.131
 - OS: Debian
-- SSH access: YES (root@91.98.80.99)
+- SSH access: YES (root@135.181.198.131)
 - Hostname: debian-8gb-fsn1-1
 
 ## Alper's Home

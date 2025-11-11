@@ -6,45 +6,38 @@ This file tracks the current status of the IN-CSE Cloud Analytics / Mood Service
 ## Completed
 - Project brief reviewed and stored in `memory-bank/project-brief.md`.
 - `productContext.md`, `activeContext.md`, `systemPatterns.md`, and `techContext.md` created and populated from the project brief.
+- Chunk 1 — IP update complete (updated WireGuard client configs and network-plan to use 135.181.198.131).
+- Chunk 2 — Implement ingest normalizer and mood-service integration (complete)
+  - Implemented `normalize_payload(con)` and `post_to_mood()` in `ingest/app.py`. The onem2m handler stores raw payloads, normalizes multiple incoming shapes, upserts `dim_*` rows, inserts into `fact_telemetry`, and forwards normalized telemetry to `MOOD_NOTIFY` (`/notify`) endpoint.
+  - Added debug/info logs to capture normalization results and per-metric inserts.
+  - Added `scripts/verify_ingest.sh` to run an integration smoke test: seed metrics, post a test notification, and verify DB inserts.
+- Mood-service integration implemented and verified
+  - `mood-service/app.py` updated to compute mood, normalize telemetry, and post oneM2M CINs.
+  - `one_m2m_post_cin()` now builds required oneM2M headers (Content-Type: `application/json;ty=4`, `X-M2M-Origin`, `X-M2M-RI`, `X-M2M-RVI`) and posts CIN body `{"m2m:cin":{"con":...,"cnf":"application/json:0"}}` (ACME validation).
+  - `.env` updated: `CSE_BASE=http://cloud-in-cse:8080/cntrm1iEXHDrA`, `CSE_ORIGIN=CAdmin`.
+  - Rebuilt and restarted `mood` container and verified:
+    - Manual CIN POST returns HTTP 201 and `X-M2M-RSC: 2001`.
+    - `/cntrm1iEXHDrA/la` returns the posted mood CIN.
+  - Added `memory-bank/ingest-mood-summary.md` documenting the flow, commands, and recommended next steps.
 
 ## In progress
-- Scaffolding mood-service (FastAPI) and docker-compose (planned).
-- Starting ACME CSE container and creating AE/CNT resource tree (planned).
-- Creating subscription(s) and testing end-to-end flow (planned).
-- Integrating PostgreSQL and Grafana for telemetry storage and visualization (in progress — init SQL, docker-compose, and Grafana provisioning added).
-- Adding ingestion service `ingest/` to process oneM2M notifications and populate the database (added and smoke-tested).
-
-## Blockers / Risks
-- ACME CSE container image availability (need image name or build instructions).
-- VPS networking / firewall configuration to expose ports 8080 and 8088.
-- Security: current plan uses basic auth for CSE; must be hardened before production.
-- Secrets: `.env` is used for local development; move to Docker secrets or a secrets manager for production.
-
-## Next steps
-- Create mood-service scaffold under `mood-service/` and add Dockerfile (existing).
-- Add ingestion logic in `mood-service` to:
-  - Write incoming oneM2M ContentInstance payloads into `raw_onem2m_ci`.
-  - Parse and upsert `dim_room`, `dim_device`, `dim_metric`.
-  - Insert parsed rows into `fact_telemetry`.
-  - Optionally refresh `mv_latest_5m` periodically (helper function `refresh_mv_latest_5m` exists).
+- Chunk 3 — Postgres migration: seed dim_metric and verify idempotency
+  - Add idempotent migration to insert canonical metric rows (temperature, humidity, co2, lux, noise, occupancy).
+  - Verify `UNIQUE(parent_path, ci_rn, metric_id)` prevents duplicates and adjust if necessary.
 - Add Grafana dashboards and optionally provision them under `grafana/provisioning/dashboards`.
 - Harden security and move credentials out of `.env`.
-- Test end-to-end data flow: POST a sample ContentInstance to the CSE, ensure it appears in the DB and in Grafana queries.
+- Test automation / CI: wire up `scripts/verify_ingest.sh` and add a CI integration job to run end-to-end smoke tests against a staging CSE.
+
+## Additional notes and recent changes
+- 2025-11-11: Implemented ingestion normalizer and mood-service integration, updated .env, applied code changes to ensure `cnf` is `application/json:0`, rebuilt `mood` container and verified CIN creation accepted by ACME IN‑CSE container `cntrm1iEXHDrA`.
+- The pipeline is now functionally end-to-end for normalized metrics and mood CIN posting. The remaining work focuses on migration idempotency, retries, observability, and operational hardening.
+
+## Next steps
+- Apply idempotent DB migration for `dim_metric` (Chunk 3).
+- Add retry/backoff in `mood-service` for CIN POSTs and add basic success/failure metrics.
+- Move CSE origin credentials into Docker secrets or a secret manager.
+- Add integration test to CI that exercises ingest -> DB -> mood -> CSE /la.
+- Add Grafana dashboards and provision them.
 
 ## Notes
 - Update this file after each major session so Cline can track ongoing progress across conversations.
-
-## Recent changes
-- 2025-10-02: Persisted net.ipv4.ip_forward=1 and installed iptables-persistent on the cloud VPS (debian-8gb-fsn1-1). Saved current iptables rules so WireGuard NAT (wg0) and forwarding persist across reboots. Commands executed: `echo "net.ipv4.ip_forward=1" > /etc/sysctl.d/99-wireguard.conf; sudo sysctl --system; sudo apt-get install -y iptables-persistent; sudo netfilter-persistent save`.
-- 2025-10-09: Added PostgreSQL + Grafana to the local development stack on branch `feature/database-dashboarding`:
-  - Created `postgres/init.sql` which defines `dim_room`, `dim_device`, `dim_metric`, `raw_onem2m_ci`, `fact_telemetry`, helpful indexes, `v_room_metrics`, `v_room_comfort`, and materialized view `mv_latest_5m`. Provided a helper function `refresh_mv_latest_5m` and created role `onem2m_app`.
-  - Updated `docker-compose.yml` to add `postgres` and `grafana` services and persistent volumes.
-  - Added Grafana provisioning file `grafana/provisioning/datasources/datasource.yml` to auto-provision the PostgreSQL datasource.
-  - Created local `.env` (excluded from git) for DB and Grafana credentials used in local development.
-  - Started `postgres` and `grafana` containers and verified:
-    - Database objects exist (tables, view, materialized view).
-    - Grafana successfully provisions and connects to the Postgres datasource (`Database Connection OK`).
-  - Left next steps: implement ingestion in `mood-service` and add dashboards/provisioning.
-- 2025-10-09: Added `ingest` service (Flask) and Dockerfile; updated `docker-compose.yml`. Performed smoke test:
-  - Sent test payload via `POST /test-insert` to http://localhost:8089/test-insert.
-  - Database rows were inserted into `fact_telemetry` for `cin-smoketest-001` (temperature & humidity).

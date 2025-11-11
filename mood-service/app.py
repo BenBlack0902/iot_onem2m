@@ -2,9 +2,12 @@ import os
 import time
 import json
 import logging
+import uuid
 from typing import Any, Dict, Optional
 
 import httpx
+import psycopg2
+from psycopg2.extras import Json
 from fastapi import FastAPI, Request, HTTPException, Query
 from pydantic import BaseModel
 
@@ -161,17 +164,36 @@ def compute_mood_score(sample: Dict[str, Any]) -> Dict[str, Any]:
 
 def one_m2m_post_cin(target_path: str, con_payload: Dict[str, Any]) -> httpx.Response:
     """
-    Post a content instance to the CSE. We do a simple POST with JSON:
-    { "con": { ... } } and include basic auth. If the CSE requires specific headers
-    (like X-M2M-Origin and Content-Type with ty=4), adapt here later.
+    Post a content instance to the CSE as an oneM2M CIN (ty=4).
+    Adds required oneM2M headers (X-M2M-Origin, X-M2M-RI, X-M2M-RVI) and sets
+    Content-Type to include the ty=4 directive. Includes "cnf":"application/json"
+    in the posted CIN body.
     """
     url = target_path
     auth = (CSE_USER, CSE_PASS) if CSE_USER or CSE_PASS else None
-    headers = {"Content-Type": "application/json"}
-    body = {"m2m:cin": {"con": con_payload}}
-    logger.info("Posting mood CIN to %s with body %s", url, body)
-    resp = client.post(url, json=body, auth=auth, headers=headers)
-    resp.raise_for_status()
+
+    # Build oneM2M headers
+    headers = {
+        "Content-Type": "application/json;ty=4",
+        "Accept": "application/json",
+        "X-M2M-Origin": CSE_ORIGIN,
+        "X-M2M-RI": str(uuid.uuid4()),
+        "X-M2M-RVI": "4",
+    }
+
+    body = {"m2m:cin": {"con": con_payload, "cnf": "application/json:0"}}
+    logger.info("Posting mood CIN to %s with body %s headers %s", url, body, {k: headers[k] for k in ("X-M2M-Origin", "X-M2M-RI", "X-M2M-RVI")})
+
+    resp = client.post(url, json=body, headers=headers, auth=auth)
+    try:
+        resp.raise_for_status()
+    except httpx.HTTPStatusError:
+        # Log response body for diagnostics then re-raise
+        try:
+            logger.error("CSE error status %s body: %s", resp.status_code, resp.text)
+        except Exception:
+            logger.exception("CSE error and failed to read response body")
+        raise
     return resp
 
 
@@ -193,13 +215,120 @@ async def notify(request: Request):
         logger.warning("Could not find telemetry 'con' in notification")
         raise HTTPException(status_code=400, detail="No telemetry 'con' found in notification")
 
+    # Normalize synonyms so compute_mood_score gets expected keys (temp, rh, co2, lux, noise, occ)
+    if isinstance(telemetry, dict):
+        # temperature -> temp
+        if "temperature" in telemetry and "temp" not in telemetry:
+            telemetry["temp"] = telemetry.get("temperature")
+        if "tempe" in telemetry and "temp" not in telemetry:
+            telemetry["temp"] = telemetry.get("tempe")
+        if "temp" in telemetry:
+            # also keep a canonical float
+            try:
+                telemetry["temp"] = float(telemetry["temp"])
+            except Exception:
+                pass
+
+        # humidity -> rh
+        if "humidity" in telemetry and "rh" not in telemetry:
+            telemetry["rh"] = telemetry.get("humidity")
+        if "humiy" in telemetry and "rh" not in telemetry:
+            telemetry["rh"] = telemetry.get("humiy")
+        if "rh" in telemetry:
+            try:
+                telemetry["rh"] = float(telemetry["rh"])
+            except Exception:
+                logger.debug("Could not convert rh to float: %s", telemetry.get("rh"))
+
+        # occupancy -> occ
+        if "occupancy" in telemetry and "occ" not in telemetry:
+            telemetry["occ"] = telemetry.get("occupancy")
+        if "occ" in telemetry:
+            try:
+                telemetry["occ"] = float(telemetry["occ"])
+            except Exception:
+                pass
+
+        # co2 variants
+        if "co2" not in telemetry and "co2ppm" in telemetry:
+            telemetry["co2"] = telemetry.get("co2ppm")
+        if "co2" in telemetry:
+            try:
+                telemetry["co2"] = float(telemetry["co2"])
+            except Exception:
+                pass
+
+        # lux / noise keep as-is if present; try to coerce to float
+        for k in ("lux", "noise"):
+            if k in telemetry:
+                try:
+                    telemetry[k] = float(telemetry[k])
+                except Exception:
+                    pass
+
     mood = compute_mood_score(telemetry)
 
-    # Construct CSE target path for posting mood CIN
-    target = f"{CSE_BASE}/cloud-analytics/analytics/mood/score"
+    # Persist mood to Postgres (room_id = 1)
+    try:
+        # Try to extract ci_rn and parent_path from the notification payload
+        def find_ci_identifiers(obj):
+            if isinstance(obj, dict):
+                if "m2m:cin" in obj and isinstance(obj["m2m:cin"], dict):
+                    cin = obj["m2m:cin"]
+                    return (cin.get("rn") or cin.get("ri"), payload.get("sur") or "")
+                for v in obj.values():
+                    res = find_ci_identifiers(v)
+                    if res and (res[0] or res[1]):
+                        return res
+            elif isinstance(obj, list):
+                for item in obj:
+                    res = find_ci_identifiers(item)
+                    if res and (res[0] or res[1]):
+                        return res
+            return (None, None)
+
+        ci_rn, parent_path = find_ci_identifiers(payload)
+
+        # Timestamp for DB (epoch seconds)
+        ts_val = int(mood.get("ts", time.time()))
+
+        # Connect and upsert mood row (room_id fixed to 1)
+        PG_DSN = os.getenv("DATABASE_URL", "postgresql://onem2m:onem2m_pass@postgres:5432/onem2m")
+        try:
+            conn = psycopg2.connect(PG_DSN)
+            with conn:
+                with conn.cursor() as cur:
+                    cur.execute("""
+                        INSERT INTO fact_mood (parent_path, ci_rn, ts_cse, score, label, confidence, room_id, device)
+                        VALUES (%s, %s, to_timestamp(%s), %s, %s, %s, %s, %s)
+                        ON CONFLICT (parent_path, ci_rn) DO UPDATE
+                          SET score = EXCLUDED.score,
+                              label = EXCLUDED.label,
+                              confidence = EXCLUDED.confidence,
+                              inserted_at = now()
+                    """, (
+                        parent_path,
+                        ci_rn,
+                        ts_val,
+                        mood.get("score"),
+                        mood.get("label"),
+                        float(mood.get("confidence", 0.0)) if mood.get("confidence") is not None else None,
+                        1,
+                        telemetry.get("device"),
+                    ))
+        except Exception:
+            logger.exception("Failed to persist mood to Postgres")
+    except Exception:
+        logger.exception("Error during mood DB extraction/persist")
+
+    # Post directly to the CSE container URL provided in CSE_BASE.
+    # The CSE_BASE should be the full container resource path when you want to
+    # post directly to that container (e.g. http://host:8080/cntrm1iEXHDrA).
+    # This avoids appending extra path segments that may not exist in the CSE tree.
+    target = os.getenv("CSE_BASE", "http://cloud-in-cse:8080/cntrm1iEXHDrA").rstrip("/")
     try:
         resp = one_m2m_post_cin(target, mood)
-        logger.info("Mood CIN posted, status %s", resp.status_code)
+        logger.info("Mood CIN posted, status %s (target=%s)", resp.status_code, target)
     except httpx.HTTPStatusError as exc:
         logger.error("Failed to write CIN to CSE: %s - %s", exc.response.status_code, exc.response.text)
         raise HTTPException(status_code=502, detail="Failed to write CIN to CSE")

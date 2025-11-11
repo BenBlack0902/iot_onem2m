@@ -1,0 +1,33 @@
+2025-11-11T22:45:01+00:00 POLL -> {"ts":1762901101.432364,"room":"Room01","temperature":22.6,"humidity":56.0,"co2":4921.21}
+2025-11-11T22:45:01+00:00 Posted to ingest as cin-pull-1762901101 (HTTP 204)
+2025-11-11T22:45:01+00:00 Done.
+2025-11-11T22:50:01+00:00 POLL -> {"ts":1762901401.77224,"room":"Room01","temperature":22.6,"humidity":56.0,"co2":4921.21}
+2025-11-11T22:50:01+00:00 Posted to ingest as cin-pull-1762901401 (HTTP 204)
+2025-11-11T22:50:01+00:00 Done.
+2025-11-11T22:55:01+00:00 POLL -> {"ts":1762901701.13641,"room":"Room01","temperature":22.6,"humidity":56.0,"co2":5146.23}
+2025-11-11T22:55:01+00:00 Posted to ingest as cin-pull-1762901701 (HTTP 204)
+2025-11-11T22:55:01+00:00 Done.
+2025-11-11T23:00:01+00:00 POLL -> {"ts":1762902001.513211,"room":"Room01","temperature":22.6,"humidity":56.0,"co2":5146.23}
+2025-11-11T23:00:01+00:00 Posted to ingest as cin-pull-1762902001 (HTTP 204)
+2025-11-11T23:00:01+00:00 Done.
+2025-11-11T23:05:01+00:00 POLL -> {"ts":1762902301.867321,"room":"Room01","temperature":22.6,"humidity":56.0,"co2":5146.23}
+2025-11-11T23:05:01+00:00 Posted to ingest as cin-pull-1762902301 (HTTP 204)
+2025-11-11T23:05:01+00:00 Done.
+2025-11-11T23:10:01+00:00 POLL -> {"ts":1762902601.148872,"room":"Room01","temperature":22.6,"humidity":56.0,"co2":5146.23}
+2025-11-11T23:10:01+00:00 Posted to ingest as cin-pull-1762902601 (HTTP 204)
+2025-11-11T23:10:01+00:00 Done.
+2025-11-11T23:15:01+00:00 POLL -> {"ts":1762902901.446519,"room":"Room01","temperature":22.6,"humidity":56.0,"co2":5146.23}
+2025-11-11T23:15:01+00:00 Posted to ingest as cin-pull-1762902901 (HTTP 204)
+2025-11-11T23:15:01+00:00 Done.
+2025-11-11T23:20:01+00:00 POLL -> {"ts":1762903201.801808,"room":"Room01","temperature":22.6,"humidity":56.0,"co2":5146.23}
+2025-11-11T23:20:01+00:00 Posted to ingest as cin-pull-1762903201 (HTTP 204)
+2025-11-11T23:20:01+00:00 Done.
+2025-11-11T23:25:01+00:00 POLL -> {"ts":1762903501.16727,"room":"Room01","temperature":22.6,"humidity":56.0,"co2":5349.46}
+2025-11-11T23:25:01+00:00 Posted to ingest as cin-pull-1762903501 (HTTP 204)
+2025-11-11T23:25:01+00:00 Done.
+2025-11-11T23:30:01+00:00 POLL -> {"ts":1762903801.601991,"room":"Room01","temperature":22.6,"humidity":56.0,"co2":5349.46}
+2025-11-11T23:30:01+00:00 Posted to ingest as cin-pull-1762903801 (HTTP 204)
+2025-11-11T23:30:01+00:00 Done.
+2025-11-11T23:35:01+00:00 POLL -> {"ts":1762904101.442314,"room":"Room01","temperature":22.7,"humidity":56.0,"co2":5347.65}
+2025-11-11T23:35:01+00:00 Posted to ingest as cin-pull-1762904101 (HTTP 204)
+2025-11-11T23:35:01+00:00 Done.
