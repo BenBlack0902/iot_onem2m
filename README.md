@@ -1,305 +1,388 @@
-# OneM2M Ingest → Mood → Postgres Pipeline
+# Mood Monitor — oneM2M Ingest → Mood → Postgres Pipeline
 
+Authors: Alper Ramadani, Benjamin Karic, Tahir Toy
+
+Overview
+--------
+Mood Monitor is an end-to-end telemetry ingestion and analytics pipeline that:
+- receives oneM2M Content Instances (CINs) from an ACME CSE,
+- normalizes telemetry into canonical metrics,
+- persists telemetry in Postgres for analytics,
+- computes a compact "mood" score and publishes a derived CIN back to the CSE,
+- optionally runs an ML-based mood predictor in parallel (read-only) for experimentation.
+
+This README is the concise, user-facing guide for hackathon delivery and reviewers. For the canonical technical reference and runbook, see docs/TECHNICAL.md.
+
+Quick links
+-----------
+- Full technical documentation and runbook: docs/TECHNICAL.md
+- Experimental ML-only service: mood-service-ml/ (calculation-only; safe for testing)
+- Integration test helper: scripts/verify_ingest.sh
+- Database migrations: postgres/migrations/
+- Compose orchestrator: docker-compose.yml
+- WireGuard VPN plan and setup: wireguard-onem2m-setup/docs/network-plan.md
+
+How it works (pipeline)
+-----------------------
+1) Devices or MN-CSEs write telemetry CINs into the IN-CSE resource tree under:
+   /~/in-cse/in-name/cloud-analytics/telemetry/room-<id>/sample
+
+2) The ACME CSE triggers a subscription (SUB) with nct=2 (full representation) to the ingest service.
+
+3) ingest:
+   - Extracts `m2m:cin.con` from notification payload variants.
+   - Normalizes synonyms and shapes into canonical metrics.
+   - Upserts dimension rows (room, device, metric) and inserts normalized telemetry into fact_telemetry.
+   - Forwards a normalized oneM2M-style notification to mood-service.
+
+4) mood-service:
+   - Computes a heuristic mood score (0..100) and label ∈ {focus, neutral, tired}.
+   - Persists results into fact_mood.
+   - Posts a mood CIN back to the IN-CSE under:
+     /~/in-cse/in-name/cloud-analytics/analytics/mood/score
+
+5) Grafana (optional) visualizes metrics and mood from Postgres. UIs can also read the latest mood from the CSE via /la or via mood-service GET /latest-mood.
+
+High-level architecture
+-----------------------
+- ACME CSE (IN-CSE) — Receives CINs; delivers subscription notifications.
+- ingest — Flask service that handles /notify (or /onem2m), normalizes, persists to Postgres, and forwards to mood-service.
+- mood-service — FastAPI service that computes the mood, persists to Postgres, and posts derived mood CINs to the CSE.
+- mood-service-ml — Optional, experimental ML predictor service for testing models; calculation-only (no DB writes or CSE posts).
+- Postgres — Stores dim tables and the facts fact_telemetry and fact_mood.
+- Grafana — Visualizations and dashboards.
+
+Screenshots
+-----------
+ACME CSE — resource tree and moodAnalysis
+![ACME CSE UI](memory-bank/acme_ressourcetree.png)
+
+Grafana — System Overview
+![Grafana system overview](memory-bank/Grafana Dashboard with postgres tables.png)
+
+Grafana — Postgres tables (raw and dimensions)
+![Grafana tables view](memory-bank/postgres tables in grafana.png)
+
+Data flow (ASCII)
+-----------------
+CIN -> (ACME CSE) -> SUB notify -> ingest (/notify)
+   -> normalize -> Postgres (fact_telemetry)
+   -> forward to mood-service (/notify)
+   -> compute mood -> Postgres (fact_mood)
+   -> post mood CIN -> (ACME CSE) -> read via /la
+
+Supported metrics (canonical keys)
+----------------------------------
+- temperature: temp / tempe / temperature
+- humidity: rh / humiy / humidity
+- co2: co2 / co2ppm
+- lux: lux
+- noise: noise
+- occupancy: occ / occupancy
+
+Canonical payload examples
+--------------------------
+Telemetry sample (MN → IN):
+```json
+{"co2": 935, "noise": 58, "lux": 320, "temp": 23.1, "rh": 41, "occ": 2, "ts": 1738075200}
+```
+
+Mood result (IN):
+```json
+{"score": 78, "label": "focus", "ts": 1738075210}
+```
+
+Components and responsibilities
+-------------------------------
+- ingest/ (Flask)
+  - Endpoints: POST /notify, /onem2m, / (accepts SUB notifications), /test-insert (helper)
+  - Key functions:
+    - normalize_payload(con) — maps synonyms, coerces numeric fields, handles arrays and nested shapes.
+    - post_to_mood(normalized, ci_rn, ct, parent) — forwards normalized telemetry to mood-service.
+  - Persists: raw_onem2m_ci (raw payload), exploded metrics into fact_telemetry; upserts dim_room, dim_device, dim_metric.
+  - Env: DATABASE_URL (libpq or DSN), MOOD_NOTIFY (default http://mood:8088/notify).
+- mood-service/ (FastAPI)
+  - Endpoints: POST /notify (consume notification/normalized), GET /latest-mood (reads CSE /la).
+  - Key functions:
+    - compute_mood_score(sample) — heuristic weighting of co2, noise, lux, temp, rh, occ.
+    - one_m2m_post_cin(target_path, con_payload) — posts CIN with required oneM2M headers.
+  - Persists mood to fact_mood and posts CIN to CSE.
+  - Env: CSE_BASE, CSE_ORIGIN, DATABASE_URL, ROOM_IDS, MOOD_NOTIFY.
+  - Important: CSE_BASE should be the FULL container resource path for the mood score container (example below).
+- mood-service-ml/ (FastAPI)
+  - Endpoints: POST /notify
+  - Purpose: run in parallel for ML testing. Loads joblib model if provided (MOOD_MODEL_PATH), otherwise falls back to heuristic.
+  - No side effects: does NOT write to DB or CSE.
+- postgres/ (Postgres 15)
+  - init.sql: initial schema bootstrap (executed on first container init).
+  - migrations/: SQL migrations (seed metrics, create fact_mood).
+- grafana/ (optional)
+  - Provisioning under grafana/provisioning for datasources/dashboards.
+
+Database model (key tables)
+---------------------------
+- dim_metric(metric_id, metric_rn, unit, …) — seeded with canonical metrics.
+- dim_room(room_id, room_rn, …)
+- dim_device(device_id, device_rn, room_id, …)
+- fact_telemetry(ts_cse, device_id, metric_id, value, value_text, quality, parent_path, ci_rn, …)
+- fact_mood(parent_path, ci_rn, ts_cse, score, label, confidence, room_id, device, inserted_at, …)
+
+Docker Compose (services, ports, networks)
+------------------------------------------
+- acme (container_name: cloud-in-cse)
+  - Image: r3dpanda1/acme-onem2m-cse
+  - Ports: 8080:8080
+  - Volumes: ./cse:/data, acme-data:/opt/ACME-oneM2M-CSE/data
+  - Network: in-cse-net
+- mood (mood-service)
+  - Build: ./mood-service
+  - Ports: 8088:8088
+  - Env: CSE_BASE, CSE_ORIGIN, MOOD_NOTIFY, ROOM_IDS
+  - Depends on: acme
+  - Network: in-cse-net
+- postgres
+  - Image: postgres:15
+  - Volumes: postgres-data:/var/lib/postgresql/data, ./postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+  - Network: in-cse-net
+- grafana
+  - Image: grafana/grafana:latest
+  - Ports: 3000:3000
+  - Env: GF_SECURITY_ADMIN_PASSWORD
+  - Depends on: postgres
+  - Network: in-cse-net
+- ingest
+  - Build: ./ingest
+  - Ports: 8089:8088 (container listens on 8088; mapped to 8089 on host)
+  - Env: DATABASE_URL=postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+  - Volumes: ./logs/ingest:/var/log/ingest
+  - Depends on: postgres
+  - Network: in-cse-net
+
+Quick start (developer)
+-----------------------
+Prerequisites:
+- Docker & Docker Compose
+- Git
+- Keep host ports free: 8080 (CSE), 8088 (mood), 8089 (ingest), 3000 (Grafana), 5432 internal (Postgres)
+
+1) Start the stack
+```bash
+docker compose up -d
+```
+
+2) Verify services are running
+```bash
+docker ps --filter name=onem2m_postgres -a
+docker logs --tail 100 ingest
+docker logs --tail 100 mood
+```
+
+3) Run integration smoke test
+```bash
+./scripts/verify_ingest.sh
+```
+
+4) Manual test: post a CIN to CSE
+```bash
+curl -v -X POST "http://localhost:8080/~/in-cse/in-name/cloud-analytics/telemetry/room-101/sample" \
+  -H "Content-Type: application/json;ty=4" \
+  -H "X-M2M-Origin: CAdmin" \
+  -H "X-M2M-RI: $(uuidgen)" \
+  -H "X-M2M-RVI: 4" \
+  -d '{"m2m:cin":{"con":{"tempe":22.3,"humiy":50,"co2":820},"cnf":"application/json:0"}}'
+```
+
+5) Read latest mood from CSE
+```bash
+curl -s "http://localhost:8080/~/in-cse/in-name/cloud-analytics/analytics/mood/score/la" | jq
+```
+
+6) Or from mood-service thin API
+```bash
+curl -s "http://localhost:8088/latest-mood" | jq
+```
+
+Experimental ML service (optional)
+----------------------------------
+Build and run locally:
+```bash
+# Build image
+docker build -t mood-service-ml -f mood-service-ml/Dockerfile .
+
+# Create a toy model artifact
+docker run --rm -v "$(pwd)":/workdir -w /workdir mood-service-ml python3 create_model.py
+
+# Run calculation-only service (maps host 8090 -> container 8088)
+docker run -d --name mood-ml-debug -p 8090:8088 \
+  -e MOOD_MODEL_PATH=/models/mood_model.pkl \
+  -v "$(pwd)"/mood_model.pkl:/models/mood_model.pkl:ro \
+  mood-service-ml
+
+# Test
+curl -s -X POST http://localhost:8090/notify -H "Content-Type: application/json" \
+  -d '{"m2m:cin":{"con":{"co2":600,"noise":40,"lux":300,"temp":23,"rh":45,"occ":1}}}' | jq
+```
+
+Configuration & environment variables
+-------------------------------------
+Example `.env`:
+```ini
+# CSE interaction (IMPORTANT: CSE_BASE should be the FULL container path for mood score)
+# Example: http://cloud-in-cse:8080/~/in-cse/in-name/cloud-analytics/analytics/mood/score
+CSE_BASE=http://cloud-in-cse:8080/~/in-cse/in-name/cloud-analytics/analytics/mood/score
+CSE_ORIGIN=admin:admin
+
+# Service interop
+MOOD_NOTIFY=http://mood:8088/notify
+ROOM_IDS=room-101
+
+# Postgres
+POSTGRES_USER=onem2m
+POSTGRES_PASSWORD=onem2m_pass
+POSTGRES_DB=onem2m
+
+# Grafana
+GRAFANA_ADMIN_PASSWORD=changeme
+```
+
+Notes:
+- mood-service defaults use `acme` in code, but our compose CSE container is named `cloud-in-cse`. Provide CSE_BASE explicitly to avoid name mismatches.
+- Postgres init.sql runs only on first initialization. Apply migrations manually if needed after the first run.
+
+ACME resource exploration (real demo server)
+----------------------------------
+These examples use the public VPS ACME CSE at 135.181.198.131:8080. Adjust the IP if your deployment differs.
+
+Example: read an announced resource and reshape with jq to the normalized telemetry fields our pipeline expects:
+```bash
+root@ubuntu-4gb-hel1-3:~/iot_onem2m# curl -s \
+  -H "Accept: application/json" \
+  -H "X-M2M-Origin: CAdmin" \
+  -H "X-M2M-RI: $(uuidgen)" \
+  -H "X-M2M-RVI: 4" \
+  "http://135.181.198.131:8080/aiQSrAnncdO6xF8vb4U?rcn=5" \
+  | jq '.[\"cod:aiQSrAnnc\"] | {ts: now|tonumber, room: "Room01", temperature: .tempe, humidity: .humiy, co2: .co2}'
+{
+  "ts": 1762899857.255733,
+  "room": "Room01",
+  "temperature": 22.5,
+  "humidity": 56.0,
+  "co2": 4577.99
+}
+```
+
+Browse common ACME resources:
+```bash
+# 1) CSE Base with all children
+curl -X GET "http://135.181.198.131:8080/id-cloud-in-cse?rcn=4" \
+  -H "X-M2M-Origin: CAdmin" \
+  -H "X-M2M-RI: $(uuidgen)" \
+  -H "X-M2M-RVI: 4" \
+  -H "Accept: application/json"
+
+# 2) Remote CSE
+curl -X GET "http://135.181.198.131:8080/id-room-mn-cse" \
+  -H "X-M2M-Origin: CAdmin" \
+  -H "X-M2M-RI: $(uuidgen)" \
+  -H "X-M2M-RVI: 4" \
+  -H "Accept: application/json"
+
+# 3) Cross Resource (cbA) with children
+curl -X GET "http://135.181.198.131:8080/cbAnNG65oGsiT?rcn=5" \
+  -H "X-M2M-Origin: CAdmin" \
+  -H "X-M2M-RI: $(uuidgen)" \
+  -H "X-M2M-RVI: 4" \
+  -H "Accept: application/json"
+
+# 4) Air Quality Sensor Announcement
+curl -X GET "http://135.181.198.131:8080/aiQSrAnncdO6xF8vb4U" \
+  -H "X-M2M-Origin: CAdmin" \
+  -H "X-M2M-RI: $(uuidgen)" \
+  -H "X-M2M-RVI: 4" \
+  -H "Accept: application/json"
+
+# 5) Subscription
+curl -X GET "http://135.181.198.131:8080/subOgqLiAqx0M" \
+  -H "X-M2M-Origin: CAdmin" \
+  -H "X-M2M-RI: $(uuidgen)" \
+  -H "X-M2M-RVI: 4" \
+  -H "Accept: application/json"
+
+# 6) Access Control Policy
+curl -X GET "http://135.181.198.131:8080/acpCreateRootResources" \
+  -H "X-M2M-Origin: CAdmin" \
+  -H "X-M2M-RI: $(uuidgen)" \
+  -H "X-M2M-RVI: 4" \
+  -H "Accept: application/json"
+```
+
+WireGuard VPN and network topology
+----------------------------------
+- Project VPN subnet: 10.100.0.0/24
+- Cloud hub (Hetzner example): 10.100.0.1
+- Spoke sites (homes) receive static VPN IPs (e.g., 10.100.0.2/3/4).
+- Routing decision: NAT on each Pi (no home router changes required).
+- Details: wireguard-onem2m-setup/docs/network-plan.md
+- Helper scripts: wireguard-onem2m-setup/scripts/
+  - 01-generate-keys.sh, 02-setup-cloud.sh, 03-setup-spoke.sh, 04-test-connection.sh
+- Per-user configs under wireguard-onem2m-setup/configs/<name> (wg0.conf samples included).
+
+Security & operations
+---------------------
+- Lock down `/notify` endpoints: IP allowlist or shared-secret header; ensure CSE ACLs are restrictive.
+- Move credentials from `.env` to Docker secrets or a secrets manager for production.
+- Set CSE container limits (mni) on high-rate containers to cap history.
+- Time sync: include `ts` in payloads and ensure VPS clock is accurate.
+- Backups: scripts/backup_postgres.sh writes pg_dump artifacts into ./backups (with retention).
+- Monitoring: add Prometheus metrics (ingest_received, mood_post_success/failure, model_load_failures).
+
+Verification & troubleshooting
+------------------------------
+- End-to-end smoke test: `./scripts/verify_ingest.sh`
+- Logs:
+  - ingest logs: docker logs -f ingest and ./logs/ingest (mounted)
+  - mood-service logs: docker logs -f mood
+  - mood-ml logs: docker logs -f mood-ml-debug
+- DB sanity:
+```bash
+docker exec -i onem2m_postgres psql -U onem2m -d onem2m \
+  -c "SELECT * FROM fact_mood ORDER BY inserted_at DESC LIMIT 20;"
+```
+- If mood CIN post fails (CSE error):
+  - Inspect mood-service logs for HTTP status and response body.
+  - Validate headers: X-M2M-Origin, X-M2M-RI, X-M2M-RVI and Content-Type `application/json;ty=4`.
+  - Confirm `CSE_BASE` points to the correct container path.
+  - Consider adding retry/backoff (future improvement).
+
+Development & CI notes
+----------------------
+- Unit tests recommended for: normalize_payload (ingest), parsing, and compute_mood_score.
+- Integration CI job: spin up Postgres + CSE + ingest + mood in a test environment; run scripts/verify_ingest.sh.
+- Add automated migration execution or document manual steps for operators.
+
+Repository map (files of interest)
+----------------------------------
+- ingest/ — app.py (normalize, DB insert), Dockerfile, requirements.txt
+- mood-service/ — app.py (heuristic compute, DB persistence, oneM2M posting), Dockerfile, requirements.txt
+- mood-service-ml/ — app.py (ML experiment, calculation-only), Dockerfile, requirements.txt, create_model.py
+- postgres/ — init.sql, migrations/*.sql (seed metrics, create fact_mood)
+- grafana/ — provisioning/
+- scripts/ — verify_ingest.sh, backup_postgres.sh, pull_airquality.sh
+- wireguard-onem2m-setup/ — configs, scripts/, docs/network-plan.md
+- docs/TECHNICAL.md — canonical technical reference & runbook (detailed)
+
+Acceptance criteria (recommended)
+---------------------------------
+- IN-CSE up; cloud-analytics AE and CNTs created.
+- SUB delivers notifications to mood-service within ≤ 2 s.
+- Mood CIN written back and visible via `/la`.
+- Dashboard can read latest mood without custom glue.
+
+License
+-------
+Add a LICENSE file per your organization/hackathon rules (e.g., MIT).
+
+Contributors & contact
+----------------------
 Authors: Alper Ramadani, Benjamin Karic, Tahir Toy  
-November 2025
-
-## Executive summary
-
-This project implements an end-to-end telemetry ingestion and analytics pipeline that receives oneM2M notifications (CIN), normalizes telemetry, computes a compact "mood" score, persists results in PostgreSQL for analytics, and posts derived CINs back to the CSE. The design balances standard oneM2M interactions with pragmatic engineering choices (Docker-based services, persistent volumes, backup policy). The pipeline is intended for research and operational evaluation of environmental sensing (CO2, temperature, humidity, etc.) and lightweight crowd-sensed wellbeing metrics.
-
-Key outcomes:
-- The ingest service accepts oneM2M notification POSTs and writes raw payloads and parsed metrics to Postgres.
-- The mood-service computes a 0–100 heuristic "mood" score and:
-  - Posts a mood CIN to the IN-CSE (oneM2M),
-  - Persists the computed mood into Postgres `fact_mood` with `room_id = 1`.
-- Persistence is robust to container restarts via Docker named volumes, and nightly logical backups (pg_dump) are installed.
-
-This README documents architecture, components, how to reproduce and verify results, data model, operational guidance (backups), and next steps.
-
----
-
-## Architecture (concise)
-
-- Docker Compose orchestrates the system:
-  - `acme` (CSE): r3dpanda1/acme-onem2m-cse — the oneM2M container.
-  - `ingest`: Python service that receives m2m:sgn POSTs, writes `raw_onem2m_ci` and `fact_telemetry`.
-  - `mood`: Python FastAPI service that computes mood from telemetry, posts mood CINs to CSE and writes `fact_mood`.
-  - `postgres`: Postgres 15 with named volume `postgres-data`.
-  - `grafana`: Grafana for visualization (named volume `grafana-data`).
-- Data flow:
-  1. CSE subscription sends m2m:sgn → ingest (`/notify`).
-  2. ingest stores the raw CIN in `raw_onem2m_ci`, normalizes metrics into `dim_metric`/`fact_telemetry`.
-  3. ingest forwards normalized payload to mood-service.
-  4. mood-service computes score, POSTS mood CIN back to CSE and INSERTs/UPSERTs into `fact_mood` (room_id = 1).
-  5. Grafana reads Postgres for dashboards.
-
----
-
-## What changed / implemented
-
-- New migration: `postgres/migrations/002_create_fact_mood.sql`
-  - Creates `fact_mood` with UNIQUE (parent_path, ci_rn) and `room_id` FK to `dim_room`.
-- mood-service:
-  - Added Postgres persistence (psycopg2-binary).
-  - Insert/Upsert pattern: ON CONFLICT (parent_path, ci_rn) DO UPDATE to ensure idempotency.
-  - Fixed parsing/robustness issues for varying oneM2M payload shapes.
-- Poller:
-  - `scripts/pull_airquality.sh` — periodic poller for announced resources (rcn=5) that posts into ingest's `/test-insert` to reuse ingest logic.
-- Backups:
-  - `scripts/backup_postgres.sh` — nightly pg_dump to `./backups` with retention (last 7).
-  - Cron entry installed to run backup daily at 02:00 (server local time).
-- Operational helpers:
-  - `scripts/verify_ingest.sh` — helper to post a sample CIN and check `raw_onem2m_ci` + `fact_telemetry`.
-- Docker compose:
-  - Ensured persistent named volumes exist for Postgres and Grafana.
-  - Added ingest log mount `./logs/ingest:/var/log/ingest` to persist service logs across container restarts.
-
-All changes have been committed and pushed to the remote repository.
-
----
-
-## Data model (short)
-
-- raw_onem2m_ci (existing): stores raw notification payload JSON.
-- dim_metric / fact_telemetry (existing): normalized metrics extracted from CINs.
-- fact_mood (new):
-  - mood_id BIGSERIAL PRIMARY KEY
-  - parent_path TEXT
-  - ci_rn TEXT
-  - ts_cse TIMESTAMPTZ
-  - score INTEGER
-  - label TEXT
-  - confidence DOUBLE PRECISION
-  - room_id INTEGER REFERENCES dim_room(room_id)
-  - device TEXT
-  - inserted_at TIMESTAMPTZ DEFAULT now()
-  - UNIQUE(parent_path, ci_rn) for idempotency
-
-Design rationale: allow fast analytics queries over mood time series while preventing duplicates from notification retries.
-
----
-
-## How to run (developers / operators)
-
-Prereqs:
-- Docker, Docker Compose
-- Ports: 8080 (CSE), 8088 (mood), 8089 (ingest host mapping), 5432 (Postgres internal)
-
-Start services:
-1. From repo root:
-   docker compose up -d
-
-2. Verify services:
-   docker ps --filter name=onem2m_postgres -a
-   docker logs --tail 100 ingest
-   docker logs --tail 100 mood
-
-Run the verification helper (automated test scenario):
-- ./scripts/verify_ingest.sh
-  - It creates a CIN and checks that:
-    - raw_onem2m_ci contains the payload,
-    - fact_telemetry contains parsed metrics,
-    - mood-service posts a mood CIN back to the CSE,
-    - fact_mood contains a persisted mood row.
-
-Check Postgres directly (examples):
-- List last raw CINs:
-  docker exec -i onem2m_postgres psql -U onem2m -d onem2m -c "SELECT created_at,parent_path,ci_rn,payload FROM raw_onem2m_ci ORDER BY created_at DESC LIMIT 10;"
-- Check mood rows:
-  docker exec -i onem2m_postgres psql -U onem2m -d onem2m -c "SELECT mood_id, parent_path, ci_rn, score, label, room_id, inserted_at FROM fact_mood ORDER BY inserted_at DESC LIMIT 20;"
-
----
-
-## Backup & restore (operational)
-
-Nightly backup:
-- `scripts/backup_postgres.sh` runs inside the host and performs:
-  docker exec -i onem2m_postgres pg_dump -U ${POSTGRES_USER} ${POSTGRES_DB} | gzip > backups/onem2m-db-<ts>.sql.gz
-- Retention: last 7 backups kept.
-
-To restore:
-- Stop Postgres container.
-- Restore via:
-  zcat backups/onem2m-db-YYYY-MM-DD-HHMMSS.sql.gz | docker exec -i onem2m_postgres psql -U onem2m -d onem2m
-- Alternatively, use filesystem snapshot/volume restore for full binary-level recovery (stop container, restore volume, start).
-
-Grafana:
-- Grafana data is persisted to `grafana-data` volume. You can also copy `grafana.db` from container:
-  docker cp grafana:/var/lib/grafana/grafana.db backups/grafana-<ts>.db
-
----
-
-## Resilience and non-loss on restart
-
-- Docker Compose uses named volumes:
-  - `postgres-data` mounted at `/var/lib/postgresql/data` — DB files survive container recreation and restarts.
-  - `grafana-data` persists Grafana state.
-- ingest logs are persisted via host mount `./logs/ingest` to retain logs across restarts.
-- Backups provide an added layer to recover from data corruption or accidental deletes.
-
-Operational recommendations:
-- Ensure the host volume directory (`./backups`, `./logs`) is included in host-level backups and has appropriate retention.
-- Monitor cron logs at `backups/cron.log`.
-
----
-
-## Testing and verification performed
-
-- Verified ingest receives notifications (by creating a test CIN); confirmed raw payload and fact_telemetry rows appear.
-- Verified mood-service computed a mood, posted CIN to the CSE and inserted rows into `fact_mood` (room_id=1).
-- Confirmed that `psycopg2-binary` was added and the mood container can connect and write to Postgres.
-- Verified backup script runs (manual execution recommended to test immediate effect).
-
----
-
-## Troubleshooting notes (common issues & fixes)
-
-- psycopg2 errors in container at startup:
-  - Ensure `psycopg2-binary` is present in `mood-service/requirements.txt` and that the image was rebuilt.
-- No CINs in Postgres:
-  - Check ingestion logs: `docker logs ingest` and check `raw_onem2m_ci`.
-- Subscription notifications not arriving:
-  - Verify `nu` matches ingest reachable address (e.g., `http://ingest:8088/notify` when CSE and ingest are inside the same Docker network, or host IP with `/notify` path).
-- Backups failing:
-  - Check `backups/cron.log` and run `./scripts/backup_postgres.sh` manually to see errors.
-
----
-
-## Files and important locations
-
-- Compose: `docker-compose.yml`
-- DB migrations: `postgres/migrations/001_seed_dim_metric.sql`, `postgres/migrations/002_create_fact_mood.sql`
-- Mood service:
-  - Code: `mood-service/app.py`
-  - Requirements: `mood-service/requirements.txt`
-- Ingest service: `ingest/app.py`, `ingest/Dockerfile`
-- Scripts:
-  - `scripts/pull_airquality.sh` — poller (optional)
-  - `scripts/verify_ingest.sh` — test helper
-  - `scripts/backup_postgres.sh` — nightly backup
-- Backups directory: `./backups` (pg_dump outputs)
-- Logs directory: `./logs/ingest` (ingest logs persisted)
-
----
-
-## Future work and research directions
-
-- Replace heuristic mood function with a learned model (time-series or multimodal).
-- Add automated tests and CI (integration tests that exercise CSE → ingest → mood → DB).
-- Add monitoring and alerting for backup health, Postgres errors, and queue lengths.
-- Add secure remote backup (S3) and encryption.
-- Add connection pooling and performance tuning for high-throughput scenarios.
-
----
-
-## How to cite / attribution
-
-If you use or adapt this code for academic work, please cite this repository and acknowledge the authors. Proposed citation format:
-
----
-
-## Contact & support
-
-For implementation questions, open an issue on the repository or contact the maintainers listed in `memory-bank/team-info` (if available).
-
-
-## Experimental: mood-service-ml (ML-only)
-
-A new parallel, calculation-only service `mood-service-ml` was added to enable safe experiments with an ML-based mood estimator without touching the production `mood-service`. This service computes mood scores from telemetry but intentionally does not persist results or post CINs to the CSE.
-
-What was added
-- mood-service-ml/app.py — FastAPI app implementing a drop-safe ML `compute_mood_score`.
-- mood-service-ml/requirements.txt — runtime dependencies (numpy, scikit-learn, joblib, FastAPI/uvicorn).
-- mood-service-ml/Dockerfile — image build config for standalone testing.
-
-Behavior summary
-- Drop-safe ML:
-  - Missing or invalid sensor fields are replaced with sensible mid-range defaults before prediction.
-  - The model is loaded lazily from the path defined in `MOOD_MODEL_PATH`.
-  - If the model is unavailable or prediction fails, the service falls back to the existing heuristic so it always returns a valid score.
-- Output:
-  - POST /notify returns JSON `{ "score": int, "label": str, "ts": epoch_seconds }` and includes an optional `confidence` when the model provides it.
-- Safety:
-  - The experimental service does not write to Postgres and does not post to the CSE — it is read-only with respect to external systems.
-
-Quick start (copy/paste)
-- Build the image:
-  docker build -t mood-service-ml -f mood-service-ml/Dockerfile .
-
-- Create a test model (optional; useful for ML predictions):
-  docker run --rm -v $(pwd):/workdir -w /workdir mood-service-ml python3 create_model.py
-
-- Run the experimental service with a mounted model:
-  docker run -d --name mood-ml-debug -p 8090:8088 \
-    -e MOOD_MODEL_PATH=/models/mood_model.pkl \
-    -v $(pwd)/mood_model.pkl:/models/mood_model.pkl:ro \
-    mood-service-ml
-
-- Test the /notify endpoint:
-  curl -s -X POST http://localhost:8090/notify \
-    -H "Content-Type: application/json" \
-    -d '{"m2m:cin":{"con":{"co2":600,"noise":40,"lux":300,"temp":23,"rh":45,"occ":1}}}' | jq
-
-<<<<<<< HEAD
-Notes
-- If `MOOD_MODEL_PATH` is not set or the model fails to load, the service will return a heuristic-based score.
-- To add this service to the compose stack, add a `mood-ml` service in `docker-compose.yml` (the repository already contains the `mood-service-ml` directory and Dockerfile).
-- See `memory-bank/ingest-mood-summary.md` for full experimental notes and test commands.
-  
-<task_progress>
-- [x] Create mood-service-ml directory and add ML calculation app.py
-- [x] Add requirements.txt and Dockerfile to mood-service-ml
-- [x] Build Docker image mood-service-ml
-- [x] Fix Dockerfile and run/test the mood-ml service
-- [x] Document experiment in memory-bank/ingest-mood-summary.md
-- [x] Update README.md with experimental notes and quick start
-</task_progress>
-=======
-- psycopg2 errors in container at startup:
-  - Ensure `psycopg2-binary` is present in `mood-service/requirements.txt` and that the image was rebuilt.
-- No CINs in Postgres:
-  - Check ingestion logs: `docker logs ingest` and check `raw_onem2m_ci`.
-- Subscription notifications not arriving:
-  - Verify `nu` matches ingest reachable address (e.g., `http://ingest:8088/notify` when CSE and ingest are inside the same Docker network, or host IP with `/notify` path).
-- Backups failing:
-  - Check `backups/cron.log` and run `./scripts/backup_postgres.sh` manually to see errors.
-
----
-
-## Files and important locations
-
-- Compose: `docker-compose.yml`
-- DB migrations: `postgres/migrations/001_seed_dim_metric.sql`, `postgres/migrations/002_create_fact_mood.sql`
-- Mood service:
-  - Code: `mood-service/app.py`
-  - Requirements: `mood-service/requirements.txt`
-- Ingest service: `ingest/app.py`, `ingest/Dockerfile`
-- Scripts:
-  - `scripts/pull_airquality.sh` — poller (optional)
-  - `scripts/verify_ingest.sh` — test helper
-  - `scripts/backup_postgres.sh` — nightly backup
-- Backups directory: `./backups` (pg_dump outputs)
-- Logs directory: `./logs/ingest` (ingest logs persisted)
-
----
-
-## Future work and research directions
-
-- Replace heuristic mood function with a learned model (time-series or multimodal).
-- Add automated tests and CI (integration tests that exercise CSE → ingest → mood → DB).
-- Add monitoring and alerting for backup health, Postgres errors, and queue lengths.
-- Add secure remote backup (S3) and encryption.
-- Add connection pooling and performance tuning for high-throughput scenarios.
-
----
-
-## How to cite / attribution
-
-If you use or adapt this code for academic work, please cite this repository and acknowledge the authors. Proposed citation format:
-
----
-
-## Contact & support
-
-For implementation questions, open an issue on the repository or contact the maintainers listed in `memory-bank/team-info` (if available).
->>>>>>> origin/main
+Open issues/PRs for bugs and improvements. PRs welcome.
