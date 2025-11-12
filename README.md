@@ -52,15 +52,12 @@ High-level architecture
 - Postgres — Stores dim tables and the facts fact_telemetry and fact_mood.
 - Grafana — Visualizations and dashboards.
 
-Screenshots
------------
-ACME CSE — resource tree and moodAnalysis
-![ACME CSE UI](memory-bank/acme_ressourcetree.png)
-
-Grafana — System Overview
+Grafana dashboards
+------------------
+System Overview (gauge and mood)
 ![Grafana system overview](memory-bank/Grafana Dashboard with postgres tables.png)
 
-Grafana — Postgres tables (raw and dimensions)
+Postgres tables (raw and dimensions)
 ![Grafana tables view](memory-bank/postgres tables in grafana.png)
 
 Data flow (ASCII)
@@ -251,6 +248,9 @@ Notes:
 
 ACME resource exploration (real demo server)
 ----------------------------------
+ACME CSE — moodAnalysis container in REST UI
+![ACME CSE UI](memory-bank/acme_ressourcetree.png)
+
 These examples use the public VPS ACME CSE at 135.181.198.131:8080. Adjust the IP if your deployment differs.
 
 Example: read an announced resource and reshape with jq to the normalized telemetry fields our pipeline expects:
