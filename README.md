@@ -201,3 +201,105 @@ If you use or adapt this code for academic work, please cite this repository and
 ## Contact & support
 
 For implementation questions, open an issue on the repository or contact the maintainers listed in `memory-bank/team-info` (if available).
+
+
+## Experimental: mood-service-ml (ML-only)
+
+A new parallel, calculation-only service `mood-service-ml` was added to enable safe experiments with an ML-based mood estimator without touching the production `mood-service`. This service computes mood scores from telemetry but intentionally does not persist results or post CINs to the CSE.
+
+What was added
+- mood-service-ml/app.py — FastAPI app implementing a drop-safe ML `compute_mood_score`.
+- mood-service-ml/requirements.txt — runtime dependencies (numpy, scikit-learn, joblib, FastAPI/uvicorn).
+- mood-service-ml/Dockerfile — image build config for standalone testing.
+
+Behavior summary
+- Drop-safe ML:
+  - Missing or invalid sensor fields are replaced with sensible mid-range defaults before prediction.
+  - The model is loaded lazily from the path defined in `MOOD_MODEL_PATH`.
+  - If the model is unavailable or prediction fails, the service falls back to the existing heuristic so it always returns a valid score.
+- Output:
+  - POST /notify returns JSON `{ "score": int, "label": str, "ts": epoch_seconds }` and includes an optional `confidence` when the model provides it.
+- Safety:
+  - The experimental service does not write to Postgres and does not post to the CSE — it is read-only with respect to external systems.
+
+Quick start (copy/paste)
+- Build the image:
+  docker build -t mood-service-ml -f mood-service-ml/Dockerfile .
+
+- Create a test model (optional; useful for ML predictions):
+  docker run --rm -v $(pwd):/workdir -w /workdir mood-service-ml python3 create_model.py
+
+- Run the experimental service with a mounted model:
+  docker run -d --name mood-ml-debug -p 8090:8088 \
+    -e MOOD_MODEL_PATH=/models/mood_model.pkl \
+    -v $(pwd)/mood_model.pkl:/models/mood_model.pkl:ro \
+    mood-service-ml
+
+- Test the /notify endpoint:
+  curl -s -X POST http://localhost:8090/notify \
+    -H "Content-Type: application/json" \
+    -d '{"m2m:cin":{"con":{"co2":600,"noise":40,"lux":300,"temp":23,"rh":45,"occ":1}}}' | jq
+
+<<<<<<< HEAD
+Notes
+- If `MOOD_MODEL_PATH` is not set or the model fails to load, the service will return a heuristic-based score.
+- To add this service to the compose stack, add a `mood-ml` service in `docker-compose.yml` (the repository already contains the `mood-service-ml` directory and Dockerfile).
+- See `memory-bank/ingest-mood-summary.md` for full experimental notes and test commands.
+  
+<task_progress>
+- [x] Create mood-service-ml directory and add ML calculation app.py
+- [x] Add requirements.txt and Dockerfile to mood-service-ml
+- [x] Build Docker image mood-service-ml
+- [x] Fix Dockerfile and run/test the mood-ml service
+- [x] Document experiment in memory-bank/ingest-mood-summary.md
+- [x] Update README.md with experimental notes and quick start
+</task_progress>
+=======
+- psycopg2 errors in container at startup:
+  - Ensure `psycopg2-binary` is present in `mood-service/requirements.txt` and that the image was rebuilt.
+- No CINs in Postgres:
+  - Check ingestion logs: `docker logs ingest` and check `raw_onem2m_ci`.
+- Subscription notifications not arriving:
+  - Verify `nu` matches ingest reachable address (e.g., `http://ingest:8088/notify` when CSE and ingest are inside the same Docker network, or host IP with `/notify` path).
+- Backups failing:
+  - Check `backups/cron.log` and run `./scripts/backup_postgres.sh` manually to see errors.
+
+---
+
+## Files and important locations
+
+- Compose: `docker-compose.yml`
+- DB migrations: `postgres/migrations/001_seed_dim_metric.sql`, `postgres/migrations/002_create_fact_mood.sql`
+- Mood service:
+  - Code: `mood-service/app.py`
+  - Requirements: `mood-service/requirements.txt`
+- Ingest service: `ingest/app.py`, `ingest/Dockerfile`
+- Scripts:
+  - `scripts/pull_airquality.sh` — poller (optional)
+  - `scripts/verify_ingest.sh` — test helper
+  - `scripts/backup_postgres.sh` — nightly backup
+- Backups directory: `./backups` (pg_dump outputs)
+- Logs directory: `./logs/ingest` (ingest logs persisted)
+
+---
+
+## Future work and research directions
+
+- Replace heuristic mood function with a learned model (time-series or multimodal).
+- Add automated tests and CI (integration tests that exercise CSE → ingest → mood → DB).
+- Add monitoring and alerting for backup health, Postgres errors, and queue lengths.
+- Add secure remote backup (S3) and encryption.
+- Add connection pooling and performance tuning for high-throughput scenarios.
+
+---
+
+## How to cite / attribution
+
+If you use or adapt this code for academic work, please cite this repository and acknowledge the authors. Proposed citation format:
+
+---
+
+## Contact & support
+
+For implementation questions, open an issue on the repository or contact the maintainers listed in `memory-bank/team-info` (if available).
+>>>>>>> origin/main

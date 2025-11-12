@@ -122,5 +122,54 @@ If you want I will:
 - Create a PR branch and push these changes (you will need to run git/push locally because this environment does not have repo push auth).
 
 Which do you prefer? I can apply the memory-bank updates now (Act mode) — say "Update memory bank" and I'll write the progress + changelog entries.
-</response>
-</plan_mode_respond>
+
+---
+
+## Experimental: mood-service-ml (ML-only)
+
+This section documents the parallel ML-only service created for safe experimentation.
+
+What
+- A new calculation-only service `mood-service-ml` was added to allow testing of an ML-based compute_mood_score without affecting the production `mood-service`.
+- Files added:
+  - mood-service-ml/app.py
+  - mood-service-ml/requirements.txt
+  - mood-service-ml/Dockerfile
+
+Why
+- To evaluate an ML approach that can be drop-safe (handles missing/invalid sensor fields) and still fall back to the existing heuristic when needed.
+- To ensure experiments do not write to Postgres or post CINs to the CSE.
+
+Key behavior
+- Drop-safe ML: missing or invalid fields are replaced with mid-range defaults before prediction.
+- Lazy model loading: the model is loaded from the path given by the MOOD_MODEL_PATH environment variable when needed.
+- Fallback heuristic: if the model is missing/unreadable or the prediction fails, the service computes a heuristic score mirroring the original logic.
+- Output: `/notify` returns a JSON object with `{"score": int, "label": str, "ts": epoch_seconds}` and optional `confidence` when available.
+
+How we tested
+1. Built the Docker image `mood-service-ml`.
+2. Created a toy model `mood_model.pkl` by running a small script inside the built image and saving it to the repo root.
+3. Ran the container `mood-ml-debug` with the model mounted:
+   - Container: mood-ml-debug
+   - Host port: 8090 -> container 8088
+   - Env: MOOD_MODEL_PATH=/models/mood_model.pkl
+   - Mount: /root/iot_onem2m/mood_model.pkl -> /models/mood_model.pkl:ro
+4. Verified Uvicorn started and that POST /notify returns a mood result. The ML model loaded when present and the service returned predictions.
+
+Quick commands (copy/paste)
+- Build:
+  docker build -t mood-service-ml -f mood-service-ml/Dockerfile .
+- Create a test model (inside the image):
+  docker run --rm -v $(pwd):/workdir -w /workdir mood-service-ml python3 create_model.py
+- Run:
+  docker run -d --name mood-ml-debug -p 8090:8088 \
+    -e MOOD_MODEL_PATH=/models/mood_model.pkl \
+    -v $(pwd)/mood_model.pkl:/models/mood_model.pkl:ro \
+    mood-service-ml
+- Test:
+  curl -s -X POST http://localhost:8090/notify -H "Content-Type: application/json" -d '{"m2m:cin":{"con":{"co2":600,"noise":40,"lux":300,"temp":23,"rh":45,"occ":1}}}' | jq
+
+Notes
+- The experimental service is intentionally read-only with respect to external systems (no DB/CSE writes).
+- To run the service as part of the compose stack, add a `mood-ml` service to `docker-compose.yml` (optional).
+- Model path is controlled by `MOOD_MODEL_PATH`. If not set or model missing, the service falls back to the heuristic.
