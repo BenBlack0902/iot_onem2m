@@ -55,10 +55,10 @@ High-level architecture
 Grafana dashboards
 ------------------
 System Overview (gauge and mood)
-![Grafana system overview](memory-bank/Grafana Dashboard with postgres tables.png)
+![Grafana system overview](memory-bank/grafana-dashboard-with-postgres-tables.png)
 
 Postgres tables (raw and dimensions)
-![Grafana tables view](memory-bank/postgres tables in grafana.png)
+![Grafana tables view](memory-bank/postgres-tables-in-grafana.png)
 
 Data flow (ASCII)
 -----------------
