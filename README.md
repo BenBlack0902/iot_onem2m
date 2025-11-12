@@ -1,7 +1,7 @@
 # OneM2M Ingest → Mood → Postgres Pipeline
 
-Authors: Ben Black, Alper, Tahir, Benjamin Karic  
-Prepared by: Cline (engineering) — November 2025
+Authors: Alper Ramadani, Benjamin Karic, Tahir Toy  
+November 2025
 
 ## Executive summary (academic style)
 
@@ -195,7 +195,6 @@ Operational recommendations:
 ## How to cite / attribution
 
 If you use or adapt this code for academic work, please cite this repository and acknowledge the authors. Proposed citation format:
-- Ben Black et al., OneM2M telemetry ingest and mood analytics pipeline (iot_onem2m), GitHub repository, 2025.
 
 ---
 
