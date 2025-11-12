@@ -3,7 +3,7 @@
 Authors: Alper Ramadani, Benjamin Karic, Tahir Toy  
 November 2025
 
-## Executive summary (academic style)
+## Executive summary
 
 This project implements an end-to-end telemetry ingestion and analytics pipeline that receives oneM2M notifications (CIN), normalizes telemetry, computes a compact "mood" score, persists results in PostgreSQL for analytics, and posts derived CINs back to the CSE. The design balances standard oneM2M interactions with pragmatic engineering choices (Docker-based services, persistent volumes, backup policy). The pipeline is intended for research and operational evaluation of environmental sensing (CO2, temperature, humidity, etc.) and lightweight crowd-sensed wellbeing metrics.
 
