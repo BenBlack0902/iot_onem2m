@@ -8,7 +8,7 @@ ENDPOINT="http://135.181.198.131:8080/aiQSrAnncdO6xF8vb4U?rcn=5"
 ROOM="Room01"
 CSE_ORIGIN="CAdmin"
 # In this compose the ingest service maps host port 8089 -> container 8088 for test-insert
-INGEST_URL="http://127.0.0.1:8089/test-insert"
+INGEST_URL="http://127.0.0.1:8088/test-insert"
 DB_USER="onem2m"
 DB_NAME="onem2m"
 POSTGRES_CONTAINER="onem2m_postgres"

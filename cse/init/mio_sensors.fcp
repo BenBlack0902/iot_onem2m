@@ -1,0 +1,93 @@
+[
+    // ModuleClass: mioOccupancySensor (occSr)
+    {
+        "type"      : "mio:occSr",
+        "lname"     : "mioOccupancySensor",
+        "cnd"       : "org.fhtwmio.common.moduleclass.mioOccupancySensor",
+        "attributes": [
+            // DataPoint: dataGenerationTime
+            {
+                "sname" : "dgt",
+                "lname" : "dataGenerationTime",
+                "type" : "timestamp",
+                "car" : "01"
+            },
+            // DataPoint: occupied
+            {
+                "sname" : "occ",
+                "lname" : "occupied",
+                "type" : "boolean",
+                "car" : "1"
+            }
+        ]
+    },
+
+    // ModuleClass Announced: mioOccupancySensorAnnc (occSrAnnc)
+    {
+        "type"      : "mio:occSrAnnc",
+        "lname"     : "mioOccupancySensorAnnc",
+        "cnd"       : "org.fhtwmio.common.moduleclass.mioOccupancySensorAnnc",
+        "attributes": [
+            // DataPoint: dataGenerationTime
+            {
+                "sname" : "dgt",
+                "lname" : "dataGenerationTime",
+                "type" : "timestamp",
+                "car" : "01"
+            },
+            // DataPoint: occupied
+            {
+                "sname" : "occ",
+                "lname" : "occupied",
+                "type" : "boolean",
+                "car" : "1"
+            }
+        ]
+    },
+
+    // ModuleClass: mioLuxSensor (luxSr)
+    {
+        "type"      : "mio:luxSr",
+        "lname"     : "mioLuxSensor",
+        "cnd"       : "org.fhtwmio.common.moduleclass.mioLuxSensor",
+        "attributes": [
+            // DataPoint: dataGenerationTime
+            {
+                "sname" : "dgt",
+                "lname" : "dataGenerationTime",
+                "type" : "timestamp",
+                "car" : "01"
+            },
+            // DataPoint: lux
+            {
+                "sname" : "lux",
+                "lname" : "lux",
+                "type" : "float",
+                "car" : "1"
+            }
+        ]
+    },
+
+    // ModuleClass Announced: mioLuxSensorAnnc (luxSrAnnc)
+    {
+        "type"      : "mio:luxSrAnnc",
+        "lname"     : "mioLuxSensorAnnc",
+        "cnd"       : "org.fhtwmio.common.moduleclass.mioLuxSensorAnnc",
+        "attributes": [
+            // DataPoint: dataGenerationTime
+            {
+                "sname" : "dgt",
+                "lname" : "dataGenerationTime",
+                "type" : "timestamp",
+                "car" : "01"
+            },
+            // DataPoint: lux
+            {
+                "sname" : "lux",
+                "lname" : "lux",
+                "type" : "float",
+                "car" : "1"
+            }
+        ]
+    }
+]

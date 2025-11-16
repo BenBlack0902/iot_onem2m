@@ -18,6 +18,13 @@ app = FastAPI(title="Mood Service")
 
 CSE_BASE = os.getenv("CSE_BASE", "http://acme:8080/~/in-cse/in-name")
 CSE_ORIGIN = os.getenv("CSE_ORIGIN", "admin:admin")
+# Optional base used for PUT to lamp color endpoint (e.g. http://10.100.0.1:8080)
+CSE_PUT_BASE = os.getenv("CSE_PUT_BASE") or CSE_BASE
+# oneM2M RVI version for PUTs to color endpoint (default "3" to match example)
+CSE_PUT_RVI = os.getenv("CSE_PUT_RVI", "3")
+# Optional overrides for path components
+CSE_PUT_CSEID = os.getenv("CSE_PUT_CSEID", "id-room-mn-cse")
+CSE_PUT_AE = os.getenv("CSE_PUT_AE", "moodMonitorAE")
 # Keep legacy env var for notify but not required for posting back.
 MOOD_NOTIFY = os.getenv("MOOD_NOTIFY", "http://mood:8088/notify")
 
@@ -83,6 +90,75 @@ def parse_con(con_field: Any) -> Optional[Dict[str, Any]]:
             # not JSON string; ignore
             return None
     return None
+
+
+# Map mood score (0..100) to a red→green hex color for LED visualization
+# 0 => #FF0000 (red), 100 => #00FF00 (green)
+# simple linear interpolation in RGB space (R decreases, G increases)
+def score_to_led_color(score: int) -> str:
+    try:
+        s = max(0, min(100, int(score)))
+    except Exception:
+        s = 0
+    t = s / 100.0
+    r = int(round(255 * (1.0 - t)))
+    g = int(round(255 * t))
+    b = 0
+    return f"#{r:02X}{g:02X}{b:02X}"
+
+
+def hex_to_rg(hex_color: str) -> Dict[str, int]:
+    try:
+        s = hex_color.strip()
+        if s.startswith('#'):
+            s = s[1:]
+        if len(s) == 3:
+            s = ''.join(c*2 for c in s)
+        r = int(s[0:2], 16)
+        g = int(s[2:4], 16)
+        b = int(s[4:6], 16)
+        return {"red": r, "green": g, "blue": b}
+    except Exception:
+        return {"red": 0, "green": 0, "blue": 0}
+
+
+def put_lamp_color(room: Optional[str], desk: Optional[str], led_hex: str):
+    """
+    Send a oneM2M PUT to the lamp color resource using red/green channels derived from the led_hex.
+    URL pattern: {CSE_PUT_BASE}/~/CSEID/-/AE/{room}/{desk}/lamp/color
+    Body: {"cod:color": {"red": <0-255>, "green": <0-255>}}
+    """
+    try:
+        if not room or not desk:
+            logger.warning("Skipping lamp color PUT: missing room or desk (room=%s, desk=%s)", room, desk)
+            return
+        # Build URL
+        base = CSE_PUT_BASE.rstrip('/')
+        # If CSE_BASE was provided, it may contain a path after host; ensure we only keep the scheme+host part
+        # Simple heuristic: if base contains '://', split on '/' and keep first 3 parts
+        if '://' in base:
+            parts = base.split('/')
+            if len(parts) > 3:
+                base = '/'.join(parts[:3])
+        url = f"{base}/~/{CSE_PUT_CSEID}/-/{CSE_PUT_AE}/{room}/{desk}/lamp/color"
+
+        # Headers
+        headers = {
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+            "X-M2M-Origin": CSE_ORIGIN,
+            "X-M2M-RI": str(uuid.uuid4()),
+            "X-M2M-RVI": CSE_PUT_RVI,
+        }
+        # Body with red/green (ignore blue for now)
+        rgb = hex_to_rg(led_hex or "#000000")
+        body = {"cod:color": {"red": int(rgb["red"]), "green": int(rgb["green"])}}
+        logger.info("PUT lamp color -> %s body=%s", url, body)
+        resp = client.put(url, json=body, headers=headers)
+        if resp.status_code >= 300:
+            logger.warning("Lamp color PUT returned %s: %s", resp.status_code, resp.text)
+    except Exception:
+        logger.exception("Failed to PUT lamp color")
 
 
 def compute_mood_score(sample: Dict[str, Any]) -> Dict[str, Any]:
@@ -159,7 +235,7 @@ def compute_mood_score(sample: Dict[str, Any]) -> Dict[str, Any]:
     else:
         label = "tired"
 
-    return {"score": score, "label": label, "ts": int(time.time())}
+    return {"score": score, "label": label, "ts": int(time.time()), "led_color": score_to_led_color(score)}
 
 
 def one_m2m_post_cin(target_path: str, con_payload: Dict[str, Any]) -> httpx.Response:
@@ -267,6 +343,13 @@ async def notify(request: Request):
                     pass
 
     mood = compute_mood_score(telemetry)
+    # Derive room/desk from telemetry labels if available
+    room_lbl = None
+    desk_lbl = None
+    if isinstance(telemetry, dict):
+        labels = telemetry.get("labels") if isinstance(telemetry.get("labels"), dict) else {}
+        room_lbl = telemetry.get("room") or labels.get("room")
+        desk_lbl = telemetry.get("desk") or labels.get("desk")
 
     # Persist mood to Postgres (room_id = 1)
     try:
@@ -299,12 +382,13 @@ async def notify(request: Request):
             with conn:
                 with conn.cursor() as cur:
                     cur.execute("""
-                        INSERT INTO fact_mood (parent_path, ci_rn, ts_cse, score, label, confidence, room_id, device)
-                        VALUES (%s, %s, to_timestamp(%s), %s, %s, %s, %s, %s)
+                        INSERT INTO fact_mood (parent_path, ci_rn, ts_cse, score, label, confidence, room_id, device, led_color)
+                        VALUES (%s, %s, to_timestamp(%s), %s, %s, %s, %s, %s, %s)
                         ON CONFLICT (parent_path, ci_rn) DO UPDATE
                           SET score = EXCLUDED.score,
                               label = EXCLUDED.label,
                               confidence = EXCLUDED.confidence,
+                              led_color = EXCLUDED.led_color,
                               inserted_at = now()
                     """, (
                         parent_path,
@@ -315,17 +399,22 @@ async def notify(request: Request):
                         float(mood.get("confidence", 0.0)) if mood.get("confidence") is not None else None,
                         1,
                         telemetry.get("device"),
+                        mood.get("led_color"),
                     ))
         except Exception:
             logger.exception("Failed to persist mood to Postgres")
     except Exception:
         logger.exception("Error during mood DB extraction/persist")
 
-    # Post directly to the CSE container URL provided in CSE_BASE.
-    # The CSE_BASE should be the full container resource path when you want to
-    # post directly to that container (e.g. http://host:8080/cntrm1iEXHDrA).
+    # Attempt to set the lamp color using the computed mood LED color
+    try:
+        put_lamp_color(room_lbl, desk_lbl, mood.get("led_color"))
+    except Exception:
+        logger.exception("Lamp color PUT step failed")
+
+    # post directly to that container (e.g. http://host:8080/CRoom01Admin/moodAnalysis).
     # This avoids appending extra path segments that may not exist in the CSE tree.
-    target = os.getenv("CSE_BASE", "http://cloud-in-cse:8080/cntrm1iEXHDrA").rstrip("/")
+    target = os.getenv("CSE_BASE", "http://cloud-in-cse:8080/CRoom01Admin/moodAnalysis").rstrip("/")
     try:
         resp = one_m2m_post_cin(target, mood)
         logger.info("Mood CIN posted, status %s (target=%s)", resp.status_code, target)

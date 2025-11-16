@@ -2,7 +2,7 @@
 # Simple integration test for ingest -> DB -> mood-service flow
 set -euo pipefail
 
-INGEST_URL="http://127.0.0.1:8089/test-insert"
+INGEST_URL="http://127.0.0.1:8088/test-insert"
 PSQL="docker exec -i onem2m_postgres psql -U onem2m -d onem2m -t -c"
 
 echo "Seeding dim_metric (idempotent)..."

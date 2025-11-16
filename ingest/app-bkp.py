@@ -4,24 +4,11 @@ import time
 import httpx
 import psycopg2
 from psycopg2.extras import Json
-from psycopg2.pool import ThreadedConnectionPool
 
 app = Flask(__name__)
 
-@app.before_request
-def log_raw_body():
-    try:
-        raw = request.get_data(cache=True, as_text=True)
-        app.logger.warning("==== RAW REQUEST BODY START ====")
-        app.logger.warning(raw)
-        app.logger.warning("==== RAW REQUEST BODY END ====")
-    except Exception as e:
-        app.logger.error(f"Could not read body: {e}")
-
-
 PG_DSN = os.getenv("DATABASE_URL", "postgresql://onem2m:onem2m_pass@postgres:5432/onem2m")
 BUFFERED = os.getenv("INGEST_BUFFERED", "1") == "1"
-
 
 
 def connect_with_retry(dsn, retries=10, delay=2):
@@ -42,34 +29,8 @@ def connect_with_retry(dsn, retries=10, delay=2):
     app.logger.error("Could not connect to Postgres after %d attempts, raising.", retries)
     raise last_exc
 
-# Initialize a threaded connection pool to avoid re-entrancy on a single connection
-DB_POOL_MIN = int(os.getenv("INGEST_DB_MIN_CONN", "1"))
-DB_POOL_MAX = int(os.getenv("INGEST_DB_MAX_CONN", "10"))
-
-def init_pool_with_retry(dsn, minconn, maxconn, retries=10, delay=2):
-    last_exc = None
-    for attempt in range(1, retries + 1):
-        try:
-            pool = ThreadedConnectionPool(minconn, maxconn, dsn)
-            app.logger.info("Created Postgres connection pool on attempt %d/%d", attempt, retries)
-            return pool
-        except Exception as exc:
-            last_exc = exc
-            app.logger.warning("Postgres pool creation attempt %d/%d failed: %s", attempt, retries, exc)
-            time.sleep(delay)
-    app.logger.error("Could not create Postgres pool after %d attempts, raising.", retries)
-    raise last_exc
-
-pool = init_pool_with_retry(PG_DSN, DB_POOL_MIN, DB_POOL_MAX)
-
-def borrow_conn():
-    return pool.getconn()
-
-def release_conn(c):
-    try:
-        pool.putconn(c)
-    except Exception:
-        pass
+# Allow libpq style or DSN, but connect with retry to avoid startup race
+conn = connect_with_retry(PG_DSN)
 
 
 def parse_ct(ct):
@@ -127,7 +88,6 @@ def normalize_payload(con):
         "co2": "co2",
         "co2ppm": "co2",
         "lux": "lux",
-        "louds": "noise",
         "noise": "noise",
         "occ": "occupancy",
         "occupancy": "occupancy",
@@ -135,26 +95,11 @@ def normalize_payload(con):
 
     def as_number(v):
         try:
-            # Explicit boolean handling
-            if isinstance(v, bool):
-                return 1.0 if v else 0.0
-            # Fast-path numbers
-            if isinstance(v, (int, float)):
-                return float(v)
-            # Strings that might be booleans or numbers
-            if isinstance(v, str):
-                s = v.strip().lower()
-                if s in ("true", "false"):
-                    return 1.0 if s == "true" else 0.0
-                try:
-                    return float(s)
-                except Exception:
-                    return None
             return float(v)
         except Exception:
             return None
 
-    out = {"metrics": [], "device": None, "room": None, "qos": {}, "ts": None, "labels": {}}
+    out = {"metrics": [], "device": None, "room": None, "qos": {}, "ts": None}
     if con is None:
         return out
 
@@ -172,13 +117,7 @@ def normalize_payload(con):
             val = m.get("value")
             txt = m.get("text")
             unit = m.get("unit")
-            num = as_number(val)
-            if num is None and txt is None and val is not None:
-                try:
-                    txt = str(val)
-                except Exception:
-                    pass
-            out["metrics"].append({"name": canon, "value": num, "text": txt, "unit": unit})
+            out["metrics"].append({"name": canon, "value": as_number(val), "text": txt, "unit": unit})
         return out
 
     # Try flat keys and then a recursive scan for nested announcement structures
@@ -196,14 +135,7 @@ def normalize_payload(con):
         for k, v in con.items():
             lk = k.lower()
             if lk in canonical_map:
-                _num = as_number(v)
-                _txt = None
-                if _num is None and v is not None:
-                    try:
-                        _txt = str(v)
-                    except Exception:
-                        _txt = None
-                out["metrics"].append({"name": canonical_map[lk], "value": _num, "text": _txt, "unit": None})
+                out["metrics"].append({"name": canonical_map[lk], "value": as_number(v), "text": None, "unit": None})
 
     # recursive extractor for nested structures (handles cod:*, m2m:cbA and similar)
     def extract_from(obj):
@@ -212,25 +144,12 @@ def normalize_payload(con):
             for k, v in obj.items():
                 lk = k.lower()
                 if lk in canonical_map:
-                    _num2 = as_number(v)
-                    _txt2 = None
-                    if _num2 is None and v is not None:
-                        try:
-                            _txt2 = str(v)
-                        except Exception:
-                            _txt2 = None
-                    out["metrics"].append({"name": canonical_map[lk], "value": _num2, "text": _txt2, "unit": None})
+                    out["metrics"].append({"name": canonical_map[lk], "value": as_number(v), "text": None, "unit": None})
                 # room label extraction
                 if k == "lbl" and isinstance(v, list):
-                    # Parse label entries like "key:value" into a labels dict
-                    if "labels" not in out or not isinstance(out.get("labels"), dict):
-                        out["labels"] = {}
                     for entry in v:
-                        if isinstance(entry, str) and ":" in entry:
-                            key, val = entry.split(":", 1)
-                            out["labels"][key] = val
-                            if key == "room" and not out.get("room"):
-                                out["room"] = val
+                        if isinstance(entry, str) and entry.startswith("room:") and not out.get("room"):
+                            out["room"] = entry.split("room:")[-1]
                 # device/resource name
                 if k == "rn" and isinstance(v, str) and not out.get("device"):
                     out["device"] = v
@@ -255,15 +174,6 @@ def normalize_payload(con):
         seen.add(key)
         deduped.append(m)
     out["metrics"] = deduped
-
-    # Device fallback: if no device was discovered, use labels.desk when available
-    try:
-        if not out.get("device"):
-            labels = out.get("labels") or {}
-            if isinstance(labels, dict) and labels.get("desk"):
-                out["device"] = labels.get("desk")
-    except Exception:
-        pass
 
     return out
 
@@ -302,14 +212,6 @@ def post_to_mood(normalized, ci_rn=None, ct=None, parent=None):
             telemetry["device"] = normalized.get("device")
         if normalized.get("ts"):
             telemetry["ts"] = normalized.get("ts")
-        # include labels if present (also flatten common ones for convenience)
-        labels = normalized.get("labels") or {}
-        if isinstance(labels, dict) and labels:
-            telemetry["labels"] = labels
-            if "desk" in labels:
-                telemetry["desk"] = labels["desk"]
-            if "sensor" in labels:
-                telemetry["sensor"] = labels["sensor"]
         payload["m2m:sgn"]["nev"]["rep"]["m2m:cin"]["con"] = telemetry
 
         # send to mood service
@@ -347,12 +249,10 @@ def process_record(db_conn, parent, ci_rn, ct, con):
             """
           INSERT INTO raw_onem2m_ci (parent_path, ci_rn, created_at, payload)
           VALUES (%s, %s, %s, %s)
-          RETURNING id
+          ON CONFLICT (parent_path, ci_rn) DO NOTHING
         """,
             (parent or "unknown", ci_rn, ts_cse, Json(con)),
         )
-        row = cur.fetchone()
-        raw_id = row[0] if row else None
 
         # Explode if payload matches our compact format or needs normalization
         device = None
@@ -404,10 +304,11 @@ def process_record(db_conn, parent, ci_rn, ct, con):
 
                 cur.execute(
                     """
-                  INSERT INTO fact_telemetry (ts_cse, device_id, room_id, metric_id, value, value_text, quality, parent_path, ci_rn, raw_id)
-                  VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                  INSERT INTO fact_telemetry (ts_cse, device_id, metric_id, value, value_text, quality, parent_path, ci_rn)
+                  VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                  ON CONFLICT (parent_path, ci_rn, metric_id) DO NOTHING
                 """,
-                    (ts_cse, device_id, room_id, metric_id, val, txt, Json(qos), parent or "unknown", ci_rn, raw_id),
+                    (ts_cse, device_id, metric_id, val, txt, Json(qos), parent or "unknown", ci_rn),
                 )
 
             # New: handle normalized payloads from other shapes
@@ -447,9 +348,9 @@ def process_record(db_conn, parent, ci_rn, ct, con):
                         val,
                         unit,
                     )
-                    if (not name) or (val is None and (txt is None)):
+                    if not name or val is None:
                         app.logger.info(
-                            "ingest: skipping metric (missing name or usable value) for ci_rn=%s : %s",
+                            "ingest: skipping metric (missing name or value) for ci_rn=%s : %s",
                             ci_rn,
                             m,
                         )
@@ -468,10 +369,11 @@ def process_record(db_conn, parent, ci_rn, ct, con):
 
                         cur.execute(
                             """
-                          INSERT INTO fact_telemetry (ts_cse, device_id, room_id, metric_id, value, value_text, quality, parent_path, ci_rn, raw_id)
-                          VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                          INSERT INTO fact_telemetry (ts_cse, device_id, metric_id, value, value_text, quality, parent_path, ci_rn)
+                          VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                          ON CONFLICT (parent_path, ci_rn, metric_id) DO NOTHING
                         """,
-                            (ts_cse, device_id, room_id, metric_id, val, txt, Json(normalized.get("qos", {})), parent or "unknown", ci_rn, raw_id),
+                            (ts_cse, device_id, metric_id, val, txt, Json(normalized.get("qos", {})), parent or "unknown", ci_rn),
                         )
                     except Exception:
                         app.logger.exception(
@@ -506,44 +408,11 @@ def extract_fields_for_queue(body: dict):
         if s.get("vrq") is True:
             return (None, None, None, None)
         rep = s.get("nev", {}).get("rep", {})
+        cin = rep.get("m2m:cin", {}) or rep
+        ci_rn = cin.get("rn")
+        ct = cin.get("ct")
+        con = cin.get("con")
         parent = s.get("sur") or "unknown"
-        ci_rn = None
-        ct = None
-        con = None
-        # Case 1: Standard CIN
-        if isinstance(rep, dict) and "m2m:cin" in rep:
-            cin = rep.get("m2m:cin", {}) or {}
-            ci_rn = cin.get("rn")
-            ct = cin.get("ct")
-            con = cin.get("con")
-        else:
-            # Case 2: Rep contains a single namespaced announcement object (e.g. mio:*, cod:*, aco:*)
-            if isinstance(rep, dict):
-                namespaced = [k for k in rep.keys() if isinstance(k, str) and ":" in k]
-                if len(namespaced) == 1 and isinstance(rep.get(namespaced[0]), dict):
-                    inner = rep.get(namespaced[0])
-                    con = inner
-                    ci_rn = inner.get("rn")
-                    ct = inner.get("ct")
-                else:
-                    # Case 3: recursively find first dict that looks like an announcement (has rn/ct or metric-like keys)
-                    metric_keys = {"tempe","temp","temperature","humiy","rh","humidity","co2","co2ppm","lux","noise","louds","occ","occupancy"}
-                    found = []
-                    def find_ann(obj):
-                        if isinstance(obj, dict):
-                            if ("rn" in obj and "ct" in obj) or any(k in obj for k in metric_keys):
-                                found.append(obj)
-                                return
-                            for v in obj.values():
-                                find_ann(v)
-                        elif isinstance(obj, list):
-                            for it in obj:
-                                find_ann(it)
-                    find_ann(rep)
-                    if found:
-                        con = found[0]
-                        ci_rn = con.get("rn")
-                        ct = con.get("ct")
     else:
         # Raw cod:* body or other
         cod_keys = [k for k in body.keys() if isinstance(k, str) and k.startswith("cod:")]
@@ -568,23 +437,19 @@ def extract_fields_for_queue(body: dict):
 
 
 def enqueue(parent, ci_rn, ct, con):
-    c = borrow_conn()
-    try:
-        with c, c.cursor() as cur:
-            cur.execute(
-                """
-                INSERT INTO ingest_queue (parent_path, ci_rn, ct, payload)
-                VALUES (%s, %s, %s, %s)
-                RETURNING id
-                """,
-                (parent or "unknown", ci_rn, ct, Json(con)),
-            )
-            row = cur.fetchone()
-            qid = row[0]
-            app.logger.info("ingest: enqueued message id=%s ci_rn=%s parent=%s", qid, ci_rn, parent)
-            return qid
-    finally:
-        release_conn(c)
+    with conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO ingest_queue (parent_path, ci_rn, ct, payload)
+            VALUES (%s, %s, %s, %s)
+            RETURNING id
+            """,
+            (parent or "unknown", ci_rn, ct, Json(con)),
+        )
+        row = cur.fetchone()
+        qid = row[0]
+        app.logger.info("ingest: enqueued message id=%s ci_rn=%s parent=%s", qid, ci_rn, parent)
+        return qid
 
 
 @app.post("/onem2m")
@@ -603,11 +468,7 @@ def onem2m():
 
     # direct processing (fallback)
     app.logger.info("ingest: direct process ci rn=%s parent=%s", ci_rn, parent)
-    c = borrow_conn()
-    try:
-        process_record(c, parent, ci_rn, ct, con)
-    finally:
-        release_conn(c)
+    process_record(conn, parent, ci_rn, ct, con)
     return ("", 204)
 
 
@@ -619,13 +480,7 @@ def notify():
     if BUFFERED:
         enqueue(parent, ci_rn, ct, con)
         return ("", 202)
-    # direct processing
-    c = borrow_conn()
-    try:
-        process_record(c, parent, ci_rn, ct, con)
-    finally:
-        release_conn(c)
-    return ("", 204)
+    return onem2m()
 
 
 @app.post("/")
@@ -636,13 +491,7 @@ def root_notify():
     if BUFFERED:
         enqueue(parent, ci_rn, ct, con)
         return ("", 202)
-    # direct processing
-    c = borrow_conn()
-    try:
-        process_record(c, parent, ci_rn, ct, con)
-    finally:
-        release_conn(c)
-    return ("", 204)
+    return onem2m()
 
 
 @app.post("/test-insert")
@@ -664,11 +513,7 @@ def test_insert():
         enqueue(parent, ci_rn, ct, con)
         return ("", 202)
     # direct
-    c = borrow_conn()
-    try:
-        process_record(c, parent, ci_rn, ct, con)
-    finally:
-        release_conn(c)
+    process_record(conn, parent, ci_rn, ct, con)
     return ("", 204)
 
 
