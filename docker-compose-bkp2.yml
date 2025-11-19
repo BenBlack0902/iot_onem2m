@@ -21,6 +21,26 @@ services:
     networks:
       - in-cse-net
 
+  mood:
+    build: ./mood-service
+    container_name: mood
+    restart: unless-stopped
+    ports:
+      - "8087:8088"  # Avoid conflict; ingest uses host 8088
+    environment:
+      - CSE_BASE=${CSE_BASE}
+      - CSE_ORIGIN=${CSE_ORIGIN}
+      - MOOD_NOTIFY=${MOOD_NOTIFY}
+      - ROOM_IDS=${ROOM_IDS}
+      - CSE_PUT_BASE=${CSE_PUT_BASE}
+      - CSE_PUT_RVI=${CSE_PUT_RVI}
+      - CSE_PUT_CSEID=${CSE_PUT_CSEID}
+      - CSE_PUT_AE=${CSE_PUT_AE}
+    depends_on:
+      - acme
+    networks:
+      - in-cse-net
+
   mood-ml:
     build: ./mood-service-ml
     container_name: mood-ml
