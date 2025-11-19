@@ -3,3 +3,6 @@
 /bin/sh: 1: ./scripts/backup_postgres.sh: Permission denied
 /bin/sh: 1: ./scripts/backup_postgres.sh: Permission denied
 /bin/sh: 1: ./scripts/backup_postgres.sh: Permission denied
+/bin/sh: 1: ./scripts/backup_postgres.sh: Permission denied
+/bin/sh: 1: ./scripts/backup_postgres.sh: Permission denied
+/bin/sh: 1: ./scripts/backup_postgres.sh: Permission denied

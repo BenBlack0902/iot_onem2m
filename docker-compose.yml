@@ -41,6 +41,24 @@ services:
     networks:
       - in-cse-net
 
+  mood-ml:
+    build: ./mood-service-ml
+    container_name: mood-ml
+    restart: unless-stopped
+    ports:
+      - "8090:8088"
+    environment:
+      - CSE_BASE=${CSE_BASE}
+      - CSE_ORIGIN=${CSE_ORIGIN}
+      - CSE_PUT_BASE=${CSE_PUT_BASE}
+      - CSE_PUT_RVI=${CSE_PUT_RVI}
+      - CSE_PUT_CSEID=${CSE_PUT_CSEID}
+      - CSE_PUT_AE=${CSE_PUT_AE}
+    depends_on:
+      - acme
+    networks:
+      - in-cse-net
+
   postgres:
     image: postgres:15
     container_name: onem2m_postgres
@@ -78,6 +96,7 @@ services:
     environment:
       - DATABASE_URL=postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       - INGEST_BUFFERED=1
+      - MOOD_NOTIFY_ML=http://mood-ml:8088/notify
     networks:
       - in-cse-net
     depends_on:
@@ -99,6 +118,7 @@ services:
       - INGEST_BACKOFF_MAX=300
       - INGEST_IDLE_SLEEP=1.0
       - INGEST_LOCK_SECS=30
+      - MOOD_NOTIFY_ML=http://mood-ml:8088/notify
     depends_on:
       - postgres
     networks:

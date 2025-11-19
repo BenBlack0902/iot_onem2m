@@ -5,6 +5,7 @@ import httpx
 import psycopg2
 from psycopg2.extras import Json
 from psycopg2.pool import ThreadedConnectionPool
+import re
 
 app = Flask(__name__)
 
@@ -270,9 +271,12 @@ def normalize_payload(con):
 
 def post_to_mood(normalized, ci_rn=None, ct=None, parent=None):
     """
-    Post normalized telemetry as a oneM2M-style notification to the mood-service notify endpoint.
-    Mood service expects a notification containing m2m:cin.con somewhere; we'll send:
-    {"m2m:sgn": {"nev": {"rep": {"m2m:cin": {"rn": <ci_rn>, "ct": <ct>, "con": <telemetry dict>}}}}, "sur": <parent>}
+    Post normalized telemetry as a oneM2M-style notification to one or more mood endpoints.
+    Builds the same oneM2M-shaped payload and POSTs to:
+      - MOOD_NOTIFY (default http://mood:8088/notify)
+      - MOOD_NOTIFY_ML (optional)
+      - MOOD_NOTIFY_TARGETS (optional, comma/space separated list)
+    Failures are logged per-target and do not abort ingest processing.
     """
     try:
         payload = {
@@ -289,20 +293,20 @@ def post_to_mood(normalized, ci_rn=None, ct=None, parent=None):
                 "sur": parent or ""
             }
         }
+
         # Build a telemetry dict from normalized
         telemetry = {}
-        # prefer metric names directly (temperature, humidity, co2, lux, noise, occupancy)
         for m in normalized.get("metrics", []):
             if m.get("name") and m.get("value") is not None:
                 telemetry[m["name"]] = m["value"]
-        # copy some metadata
+
         if normalized.get("room"):
             telemetry["room"] = normalized.get("room")
         if normalized.get("device"):
             telemetry["device"] = normalized.get("device")
         if normalized.get("ts"):
             telemetry["ts"] = normalized.get("ts")
-        # include labels if present (also flatten common ones for convenience)
+
         labels = normalized.get("labels") or {}
         if isinstance(labels, dict) and labels:
             telemetry["labels"] = labels
@@ -310,19 +314,48 @@ def post_to_mood(normalized, ci_rn=None, ct=None, parent=None):
                 telemetry["desk"] = labels["desk"]
             if "sensor" in labels:
                 telemetry["sensor"] = labels["sensor"]
+
         payload["m2m:sgn"]["nev"]["rep"]["m2m:cin"]["con"] = telemetry
 
-        # send to mood service
+        # Build target list
+        targets = []
+        primary = os.getenv("MOOD_NOTIFY", "http://mood:8088/notify")
+        if primary:
+            targets.append(primary.strip())
+        ml = os.getenv("MOOD_NOTIFY_ML")
+        if ml:
+            targets.append(ml.strip())
+        others = os.getenv("MOOD_NOTIFY_TARGETS", "")
+        if others:
+            # split on commas or whitespace
+            for t in re.split(r"[,\s]+", others.strip()):
+                if t:
+                    targets.append(t)
+
+        # dedupe while preserving order
+        seen = set()
+        uniq_targets = []
+        for t in targets:
+            if not t:
+                continue
+            if t in seen:
+                continue
+            seen.add(t)
+            uniq_targets.append(t)
+
         client = httpx.Client(timeout=5.0)
-        url = os.getenv("MOOD_NOTIFY", "http://mood:8088/notify")
-        resp = client.post(url, json=payload)
-        if resp is None:
-            app.logger.warning("post_to_mood: no response from mood service for ci_rn=%s", ci_rn)
-        else:
-            if resp.status_code >= 400:
-                app.logger.warning("post_to_mood: mood service returned status %s body=%s", resp.status_code, resp.text)
-            else:
-                app.logger.debug("post_to_mood: mood service accepted payload, status=%s", resp.status_code)
+        for url in uniq_targets:
+            try:
+                resp = client.post(url, json=payload)
+                if resp is None:
+                    app.logger.warning("post_to_mood: no response from %s for ci_rn=%s", url, ci_rn)
+                else:
+                    if resp.status_code >= 400:
+                        app.logger.warning("post_to_mood: mood service %s returned status %s body=%s", url, resp.status_code, resp.text)
+                    else:
+                        app.logger.debug("post_to_mood: mood service %s accepted payload, status=%s", url, resp.status_code)
+            except Exception as exc:
+                app.logger.exception("post_to_mood: failed to post to %s: %s", url, exc)
     except Exception as exc:
         app.logger.exception("post_to_mood failed: %s", exc)
 

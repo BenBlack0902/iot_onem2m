@@ -5,10 +5,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends gcc libffi-dev 
 
 WORKDIR /app
 
-COPY mood-service-ml/requirements.txt .
+COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY mood-service-ml/ .
+# NOTE: model file should be placed in the build context (mood_service-ml/) if you want it baked into the image.
+# If you prefer to mount the model at runtime, set MOOD_MODEL_PATH accordingly and omit copying the model.
+COPY . .
+
 
 ENV PYTHONUNBUFFERED=1
 
